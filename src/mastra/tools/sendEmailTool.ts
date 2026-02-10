@@ -1,6 +1,6 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import { sendEmail } from "../../utils/replitmail";
+import { sendEmail, zSmtpMessage, type SmtpMessage } from "../../utils/replitmail";
 
 export const sendEmailTool = createTool({
   id: "send-email-notification",
@@ -9,8 +9,8 @@ export const sendEmailTool = createTool({
 
   inputSchema: z.object({
     subject: z.string().describe("The email subject line"),
-    htmlBody: z.string().describe("The HTML content of the email"),
-    textBody: z.string().describe("The plain text fallback of the email"),
+    html: z.string().describe("The HTML content of the email"),
+    text: z.string().describe("The plain text fallback of the email"),
   }),
 
   outputSchema: z.object({
@@ -26,11 +26,13 @@ export const sendEmailTool = createTool({
     );
 
     try {
-      const result = await sendEmail({
+      const emailMessage: SmtpMessage = zSmtpMessage.parse({
         subject: context.subject,
-        html: context.htmlBody,
-        text: context.textBody,
+        html: context.html,
+        text: context.text,
       });
+
+      const result = await sendEmail(emailMessage);
 
       logger?.info(
         `✅ [sendEmailTool] Email sent successfully. MessageId: ${result.messageId}`

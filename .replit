@@ -75,3 +75,8 @@ waitForPort = 3000
 
 [workflows.workflow.metadata]
 outputType = "automations"
+
+[userenv]
+
+[userenv.shared]
+APP_URLS = "Google|https://www.google.com,GitHub|https://github.com,Fake Down App|https://this-app-does-not-exist-12345.replit.app"

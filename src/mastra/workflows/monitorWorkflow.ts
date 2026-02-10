@@ -61,7 +61,7 @@ const collectAppUrls = createStep({
 
 const verifyAppLiveness = createStep({
   id: "verify-app-liveness",
-  description: "Checks a single app URL for live status using the agent's check-url-liveness tool",
+  description: "Checks a single app URL for live status by making an HTTP GET request",
 
   inputSchema: z.object({
     url: z.string(),
@@ -74,48 +74,27 @@ const verifyAppLiveness = createStep({
     const logger = mastra?.getLogger();
     logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})`);
 
-    const response = await monitorAgent.generateLegacy(
-      [
-        {
-          role: "user",
-          content: `Check if this app is live: URL="${inputData.url}", Name="${inputData.name}". Use the check-url-liveness tool and return the raw result.`,
-        },
-      ],
-      { maxSteps: 3 }
-    );
+    const startTime = Date.now();
 
-    const toolResults = response.steps?.flatMap((s) => s.toolResults || []) || [];
-    const checkResult = toolResults.find((r: any) => r?.url) as any;
-
-    if (checkResult) {
-      logger?.info(
-        `${checkResult.isLive ? "✅" : "❌"} [verifyAppLiveness] ${inputData.name}: status=${checkResult.statusCode}`
-      );
-      return {
-        url: checkResult.url || inputData.url,
-        name: checkResult.name || inputData.name,
-        isLive: checkResult.isLive ?? false,
-        statusCode: checkResult.statusCode ?? 0,
-        responseTimeMs: checkResult.responseTimeMs ?? 0,
-        error: checkResult.error,
-        checkedAt: checkResult.checkedAt || new Date().toISOString(),
-      };
-    }
-
-    logger?.warn(`⚠️ [verifyAppLiveness] No tool result for ${inputData.name}, falling back to direct check`);
     try {
-      const startTime = Date.now();
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
+
       const resp = await fetch(inputData.url, {
         method: "GET",
         signal: controller.signal,
         redirect: "follow",
         headers: { "User-Agent": "ReplitAppMonitor/1.0" },
       });
+
       clearTimeout(timeout);
       const responseTimeMs = Date.now() - startTime;
       const isLive = resp.status >= 200 && resp.status < 400;
+
+      logger?.info(
+        `${isLive ? "✅" : "❌"} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms`
+      );
+
       return {
         url: inputData.url,
         name: inputData.name,
@@ -125,13 +104,18 @@ const verifyAppLiveness = createStep({
         checkedAt: new Date().toISOString(),
       };
     } catch (error) {
+      const responseTimeMs = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      logger?.error(`❌ [verifyAppLiveness] ${inputData.name}: Failed - ${errorMessage}`);
+
       return {
         url: inputData.url,
         name: inputData.name,
         isLive: false,
         statusCode: 0,
-        responseTimeMs: 0,
-        error: error instanceof Error ? error.message : String(error),
+        responseTimeMs,
+        error: errorMessage,
         checkedAt: new Date().toISOString(),
       };
     }

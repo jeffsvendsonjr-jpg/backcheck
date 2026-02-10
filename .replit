@@ -4,6 +4,7 @@ modules = ["nodejs-22"]
 stack = "AGENT_STACK"
 stackVersion = "2.0"
 automationTriggerConnectorName = "legacy_timebased"
+integrations = ["javascript_openai_ai_integrations:2.0.0", "replitmail:1.0.0"]
 
 [nix]
 channel = "stable-24_11"

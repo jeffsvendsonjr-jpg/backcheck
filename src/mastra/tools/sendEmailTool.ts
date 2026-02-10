@@ -1,0 +1,54 @@
+import { createTool } from "@mastra/core/tools";
+import { z } from "zod";
+import { sendEmail } from "../../utils/replitmail";
+
+export const sendEmailTool = createTool({
+  id: "send-email-notification",
+  description:
+    "Sends an email notification to the user via Replit Mail. Use this to alert the user about app monitoring results, especially when apps are down or to confirm all apps are healthy.",
+
+  inputSchema: z.object({
+    subject: z.string().describe("The email subject line"),
+    htmlBody: z.string().describe("The HTML content of the email"),
+    textBody: z.string().describe("The plain text fallback of the email"),
+  }),
+
+  outputSchema: z.object({
+    success: z.boolean(),
+    messageId: z.string().optional(),
+    error: z.string().optional(),
+  }),
+
+  execute: async ({ context, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info(
+      `📧 [sendEmailTool] Sending email with subject: "${context.subject}"`
+    );
+
+    try {
+      const result = await sendEmail({
+        subject: context.subject,
+        html: context.htmlBody,
+        text: context.textBody,
+      });
+
+      logger?.info(
+        `✅ [sendEmailTool] Email sent successfully. MessageId: ${result.messageId}`
+      );
+
+      return {
+        success: true,
+        messageId: result.messageId,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      logger?.error(`❌ [sendEmailTool] Failed to send email: ${errorMessage}`);
+
+      return {
+        success: false,
+        error: errorMessage,
+      };
+    }
+  },
+});

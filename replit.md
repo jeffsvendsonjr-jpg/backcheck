@@ -4,7 +4,7 @@
 A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy.
 
 ## Recent Changes
-- 2026-02-11: Added "watch word" support — per-URL keyword detection that triggers warnings even when the app returns 200 OK
+- 2026-02-11: Added "watch word" support — per-URL keyword detection (multiple words via semicolon) that triggers warnings even when the app returns 200 OK
 - 2026-02-10: Initial build of the monitoring automation
 
 ## Project Architecture
@@ -36,7 +36,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - `src/mastra/index.ts` - Registration and cron trigger setup
 
 ### Environment Variables
-- `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|WatchWord`, `Name|URL`, or just `URL`. The optional watch word triggers a warning if found in the page content.
+- `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|WatchWord`, `Name|URL`, or just `URL`. The optional watch word triggers a warning if found in the page content. Multiple watch words can be separated by semicolons (e.g., `Name|URL|error;maintenance;offline`).
 - `SCHEDULE_CRON_EXPRESSION` - Cron expression override (default: `0 */6 * * *`)
 
 ## User Preferences

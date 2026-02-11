@@ -10,8 +10,8 @@ const appResultSchema = z.object({
   responseTimeMs: z.number(),
   error: z.string().optional(),
   checkedAt: z.string(),
-  watchWord: z.string().optional(),
-  watchWordFound: z.boolean().optional(),
+  watchWords: z.array(z.string()).optional(),
+  watchWordsFound: z.array(z.string()).optional(),
 });
 
 const collectAppUrls = createStep({
@@ -24,7 +24,7 @@ const collectAppUrls = createStep({
     z.object({
       url: z.string(),
       name: z.string(),
-      watchWord: z.string().optional(),
+      watchWords: z.array(z.string()).optional(),
     })
   ),
 
@@ -47,7 +47,8 @@ const collectAppUrls = createStep({
     const apps = entries.map((entry) => {
       const parts = entry.split("|").map((s) => s.trim());
       if (parts.length >= 3) {
-        return { name: parts[0], url: parts[1], watchWord: parts[2] };
+        const watchWords = parts[2].split(";").map((w) => w.trim()).filter((w) => w.length > 0);
+        return { name: parts[0], url: parts[1], watchWords };
       } else if (parts.length === 2) {
         return { name: parts[0], url: parts[1] };
       }
@@ -57,7 +58,7 @@ const collectAppUrls = createStep({
     });
 
     logger?.info(`✅ [collectAppUrls] Found ${apps.length} app(s) to monitor:`, {
-      apps: apps.map((a) => `${a.name} (${a.url})${a.watchWord ? ` [watching for: "${a.watchWord}"]` : ""}`),
+      apps: apps.map((a) => `${a.name} (${a.url})${a.watchWords?.length ? ` [watching for: ${a.watchWords.map((w) => `"${w}"`).join(", ")}]` : ""}`),
     });
 
     return apps;
@@ -71,14 +72,15 @@ const verifyAppLiveness = createStep({
   inputSchema: z.object({
     url: z.string(),
     name: z.string(),
-    watchWord: z.string().optional(),
+    watchWords: z.array(z.string()).optional(),
   }),
 
   outputSchema: appResultSchema,
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${inputData.watchWord ? ` | watch word: "${inputData.watchWord}"` : ""}`);
+    const watchList = inputData.watchWords || [];
+    logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${watchList.length ? ` | watch words: ${watchList.map((w) => `"${w}"`).join(", ")}` : ""}`);
 
     const startTime = Date.now();
 
@@ -97,34 +99,39 @@ const verifyAppLiveness = createStep({
       const responseTimeMs = Date.now() - startTime;
       const isLive = resp.status >= 200 && resp.status < 400;
 
-      let watchWordFound = false;
-      if (inputData.watchWord && isLive) {
+      const watchWordsFound: string[] = [];
+      if (watchList.length > 0 && isLive) {
         try {
           const body = await resp.text();
-          watchWordFound = body.toLowerCase().includes(inputData.watchWord.toLowerCase());
-          if (watchWordFound) {
-            logger?.warn(
-              `⚠️ [verifyAppLiveness] ${inputData.name}: Watch word "${inputData.watchWord}" FOUND in response body!`
-            );
+          const bodyLower = body.toLowerCase();
+          for (const word of watchList) {
+            if (bodyLower.includes(word.toLowerCase())) {
+              watchWordsFound.push(word);
+              logger?.warn(
+                `⚠️ [verifyAppLiveness] ${inputData.name}: Watch word "${word}" FOUND in response body!`
+              );
+            }
           }
         } catch (e) {
           logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for watch word check`);
         }
       }
 
+      const hasWarnings = watchWordsFound.length > 0;
+
       logger?.info(
-        `${isLive && !watchWordFound ? "✅" : isLive && watchWordFound ? "⚠️" : "❌"} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms${watchWordFound ? `, watch word "${inputData.watchWord}" detected` : ""}`
+        `${isLive && !hasWarnings ? "✅" : isLive && hasWarnings ? "⚠️" : "❌"} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms${hasWarnings ? `, watch words found: ${watchWordsFound.map((w) => `"${w}"`).join(", ")}` : ""}`
       );
 
       return {
         url: inputData.url,
         name: inputData.name,
-        isLive: isLive && !watchWordFound,
+        isLive: isLive && !hasWarnings,
         statusCode: resp.status,
         responseTimeMs,
         checkedAt: new Date().toISOString(),
-        watchWord: inputData.watchWord,
-        watchWordFound,
+        watchWords: watchList,
+        watchWordsFound,
       };
     } catch (error) {
       const responseTimeMs = Date.now() - startTime;
@@ -140,8 +147,8 @@ const verifyAppLiveness = createStep({
         responseTimeMs,
         error: errorMessage,
         checkedAt: new Date().toISOString(),
-        watchWord: inputData.watchWord,
-        watchWordFound: false,
+        watchWords: watchList,
+        watchWordsFound: [],
       };
     }
   },
@@ -168,9 +175,9 @@ const compileVerificationReport = createStep({
     const logger = mastra?.getLogger();
     logger?.info(`📊 [compileReport] Compiling report for ${inputData.length} app(s)...`);
 
-    const warningApps = inputData.filter((app) => app.watchWordFound === true);
-    const nonLiveApps = inputData.filter((app) => !app.isLive && !app.watchWordFound);
-    const liveApps = inputData.filter((app) => app.isLive && !app.watchWordFound);
+    const warningApps = inputData.filter((app) => (app.watchWordsFound?.length ?? 0) > 0);
+    const nonLiveApps = inputData.filter((app) => !app.isLive && (app.watchWordsFound?.length ?? 0) === 0);
+    const liveApps = inputData.filter((app) => app.isLive && (app.watchWordsFound?.length ?? 0) === 0);
 
     const summaryLines = [
       `App Monitor Report - ${new Date().toISOString()}`,
@@ -189,7 +196,7 @@ const compileVerificationReport = createStep({
     if (warningApps.length > 0) {
       summaryLines.push("WARNING APPS (watch word detected):");
       warningApps.forEach((app) => {
-        summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, watch word "${app.watchWord}" found in page content`);
+        summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, watch words found: ${(app.watchWordsFound || []).map((w) => `"${w}"`).join(", ")}`);
       });
       summaryLines.push("");
     }
@@ -249,7 +256,7 @@ const notifyNonLiveApps = createStep({
       : "";
 
     const warningSection = inputData.warningApps.length > 0
-      ? `\nWARNING apps (watch word detected in page content):\n${inputData.warningApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, watch word "${app.watchWord}" found on the page`).join("\n")}`
+      ? `\nWARNING apps (watch words detected in page content):\n${inputData.warningApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, watch words found: ${(app.watchWordsFound || []).map((w) => `"${w}"`).join(", ")}`).join("\n")}`
       : "";
 
     const liveSection = inputData.liveApps.length > 0

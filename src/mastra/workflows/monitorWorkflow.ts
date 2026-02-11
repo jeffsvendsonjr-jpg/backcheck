@@ -10,6 +10,8 @@ const appResultSchema = z.object({
   responseTimeMs: z.number(),
   error: z.string().optional(),
   checkedAt: z.string(),
+  watchWord: z.string().optional(),
+  watchWordFound: z.boolean().optional(),
 });
 
 const collectAppUrls = createStep({
@@ -22,6 +24,7 @@ const collectAppUrls = createStep({
     z.object({
       url: z.string(),
       name: z.string(),
+      watchWord: z.string().optional(),
     })
   ),
 
@@ -42,9 +45,11 @@ const collectAppUrls = createStep({
       .filter((entry) => entry.length > 0);
 
     const apps = entries.map((entry) => {
-      if (entry.includes("|")) {
-        const [name, url] = entry.split("|").map((s) => s.trim());
-        return { name, url };
+      const parts = entry.split("|").map((s) => s.trim());
+      if (parts.length >= 3) {
+        return { name: parts[0], url: parts[1], watchWord: parts[2] };
+      } else if (parts.length === 2) {
+        return { name: parts[0], url: parts[1] };
       }
       const urlObj = new URL(entry);
       const name = urlObj.hostname.replace(".replit.app", "").replace(/[.-]/g, " ");
@@ -52,7 +57,7 @@ const collectAppUrls = createStep({
     });
 
     logger?.info(`✅ [collectAppUrls] Found ${apps.length} app(s) to monitor:`, {
-      apps: apps.map((a) => `${a.name} (${a.url})`),
+      apps: apps.map((a) => `${a.name} (${a.url})${a.watchWord ? ` [watching for: "${a.watchWord}"]` : ""}`),
     });
 
     return apps;
@@ -61,18 +66,19 @@ const collectAppUrls = createStep({
 
 const verifyAppLiveness = createStep({
   id: "verify-app-liveness",
-  description: "Checks a single app URL for live status by making an HTTP GET request",
+  description: "Checks a single app URL for live status and scans for watch words in the response",
 
   inputSchema: z.object({
     url: z.string(),
     name: z.string(),
+    watchWord: z.string().optional(),
   }),
 
   outputSchema: appResultSchema,
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})`);
+    logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${inputData.watchWord ? ` | watch word: "${inputData.watchWord}"` : ""}`);
 
     const startTime = Date.now();
 
@@ -91,17 +97,34 @@ const verifyAppLiveness = createStep({
       const responseTimeMs = Date.now() - startTime;
       const isLive = resp.status >= 200 && resp.status < 400;
 
+      let watchWordFound = false;
+      if (inputData.watchWord && isLive) {
+        try {
+          const body = await resp.text();
+          watchWordFound = body.toLowerCase().includes(inputData.watchWord.toLowerCase());
+          if (watchWordFound) {
+            logger?.warn(
+              `⚠️ [verifyAppLiveness] ${inputData.name}: Watch word "${inputData.watchWord}" FOUND in response body!`
+            );
+          }
+        } catch (e) {
+          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for watch word check`);
+        }
+      }
+
       logger?.info(
-        `${isLive ? "✅" : "❌"} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms`
+        `${isLive && !watchWordFound ? "✅" : isLive && watchWordFound ? "⚠️" : "❌"} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms${watchWordFound ? `, watch word "${inputData.watchWord}" detected` : ""}`
       );
 
       return {
         url: inputData.url,
         name: inputData.name,
-        isLive,
+        isLive: isLive && !watchWordFound,
         statusCode: resp.status,
         responseTimeMs,
         checkedAt: new Date().toISOString(),
+        watchWord: inputData.watchWord,
+        watchWordFound,
       };
     } catch (error) {
       const responseTimeMs = Date.now() - startTime;
@@ -117,6 +140,8 @@ const verifyAppLiveness = createStep({
         responseTimeMs,
         error: errorMessage,
         checkedAt: new Date().toISOString(),
+        watchWord: inputData.watchWord,
+        watchWordFound: false,
       };
     }
   },
@@ -132,7 +157,9 @@ const compileVerificationReport = createStep({
     totalApps: z.number(),
     liveApps: z.array(appResultSchema),
     nonLiveApps: z.array(appResultSchema),
+    warningApps: z.array(appResultSchema),
     hasNonLiveApps: z.boolean(),
+    hasWarnings: z.boolean(),
     reportTimestamp: z.string(),
     summaryText: z.string(),
   }),
@@ -141,12 +168,13 @@ const compileVerificationReport = createStep({
     const logger = mastra?.getLogger();
     logger?.info(`📊 [compileReport] Compiling report for ${inputData.length} app(s)...`);
 
-    const liveApps = inputData.filter((app) => app.isLive);
-    const nonLiveApps = inputData.filter((app) => !app.isLive);
+    const warningApps = inputData.filter((app) => app.watchWordFound === true);
+    const nonLiveApps = inputData.filter((app) => !app.isLive && !app.watchWordFound);
+    const liveApps = inputData.filter((app) => app.isLive && !app.watchWordFound);
 
     const summaryLines = [
       `App Monitor Report - ${new Date().toISOString()}`,
-      `Total: ${inputData.length} | Live: ${liveApps.length} | Down: ${nonLiveApps.length}`,
+      `Total: ${inputData.length} | Live: ${liveApps.length} | Down: ${nonLiveApps.length} | Warnings: ${warningApps.length}`,
       "",
     ];
 
@@ -154,6 +182,14 @@ const compileVerificationReport = createStep({
       summaryLines.push("DOWN APPS:");
       nonLiveApps.forEach((app) => {
         summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}${app.error ? `, error: ${app.error}` : ""}`);
+      });
+      summaryLines.push("");
+    }
+
+    if (warningApps.length > 0) {
+      summaryLines.push("WARNING APPS (watch word detected):");
+      warningApps.forEach((app) => {
+        summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, watch word "${app.watchWord}" found in page content`);
       });
       summaryLines.push("");
     }
@@ -173,7 +209,9 @@ const compileVerificationReport = createStep({
       totalApps: inputData.length,
       liveApps,
       nonLiveApps,
-      hasNonLiveApps: nonLiveApps.length > 0,
+      warningApps,
+      hasNonLiveApps: nonLiveApps.length > 0 || warningApps.length > 0,
+      hasWarnings: warningApps.length > 0,
       reportTimestamp: new Date().toISOString(),
       summaryText,
     };
@@ -184,14 +222,16 @@ const reportSchema = z.object({
   totalApps: z.number(),
   liveApps: z.array(appResultSchema),
   nonLiveApps: z.array(appResultSchema),
+  warningApps: z.array(appResultSchema),
   hasNonLiveApps: z.boolean(),
+  hasWarnings: z.boolean(),
   reportTimestamp: z.string(),
   summaryText: z.string(),
 });
 
 const notifyNonLiveApps = createStep({
   id: "notify-non-live-apps",
-  description: "Sends an urgent email notification about apps that are down",
+  description: "Sends an urgent email notification about apps that are down or have watch word warnings",
 
   inputSchema: reportSchema,
 
@@ -202,27 +242,44 @@ const notifyNonLiveApps = createStep({
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info(`🚨 [notifyNonLive] ${inputData.nonLiveApps.length} app(s) are down! Sending alert...`);
+    logger?.info(`🚨 [notifyNonLive] ${inputData.nonLiveApps.length} app(s) down, ${inputData.warningApps.length} warning(s)! Sending alert...`);
+
+    const downSection = inputData.nonLiveApps.length > 0
+      ? `\nDOWN apps:\n${inputData.nonLiveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}${app.error ? `, Error: ${app.error}` : ""}`).join("\n")}`
+      : "";
+
+    const warningSection = inputData.warningApps.length > 0
+      ? `\nWARNING apps (watch word detected in page content):\n${inputData.warningApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, watch word "${app.watchWord}" found on the page`).join("\n")}`
+      : "";
+
+    const liveSection = inputData.liveApps.length > 0
+      ? `\nLIVE apps:\n${inputData.liveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, ${app.responseTimeMs}ms`).join("\n")}`
+      : "";
+
+    const issueCount = inputData.nonLiveApps.length + inputData.warningApps.length;
+    const subjectParts = [];
+    if (inputData.nonLiveApps.length > 0) subjectParts.push(`${inputData.nonLiveApps.length} Down`);
+    if (inputData.warningApps.length > 0) subjectParts.push(`${inputData.warningApps.length} Warning(s)`);
+    const subject = `ALERT: ${subjectParts.join(", ")}`;
 
     const response = await monitorAgent.generateLegacy(
       [
         {
           role: "user",
-          content: `URGENT: Some of my published apps are down! Send me an email notification.
+          content: `URGENT: Some of my published apps need attention! Send me an email notification.
 
 Here is the monitoring report:
 - Total apps checked: ${inputData.totalApps}
 - Apps that are DOWN: ${inputData.nonLiveApps.length}
+- Apps with WARNINGS: ${inputData.warningApps.length}
 - Apps that are LIVE: ${inputData.liveApps.length}
+${downSection}${warningSection}${liveSection}
 
-DOWN apps details:
-${inputData.nonLiveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}${app.error ? `, Error: ${app.error}` : ""}`).join("\n")}
-
-LIVE apps details:
-${inputData.liveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, ${app.responseTimeMs}ms`).join("\n")}
-
-Send an email with subject "ALERT: ${inputData.nonLiveApps.length} App(s) Down" using the send-email-notification tool.
-Include a professional HTML email with red highlighting for down apps and green for live apps.
+Send an email with subject "${subject}" using the send-email-notification tool.
+Include a professional HTML email with:
+- Red highlighting for down apps
+- Orange/yellow highlighting for warning apps (where a watch word was detected in the page content even though the app returned a success status)
+- Green for live apps
 Include the timestamp: ${inputData.reportTimestamp}`,
         },
       ],
@@ -233,7 +290,7 @@ Include the timestamp: ${inputData.reportTimestamp}`,
 
     return {
       notified: true,
-      message: `Alert sent for ${inputData.nonLiveApps.length} down app(s)`,
+      message: `Alert sent: ${inputData.nonLiveApps.length} down, ${inputData.warningApps.length} warning(s)`,
     };
   },
 });

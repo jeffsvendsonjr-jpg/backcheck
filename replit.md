@@ -4,6 +4,7 @@
 A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy.
 
 ## Recent Changes
+- 2026-02-11: Added "watch word" support — per-URL keyword detection that triggers warnings even when the app returns 200 OK
 - 2026-02-10: Initial build of the monitoring automation
 
 ## Project Architecture
@@ -14,12 +15,12 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - **Engine**: Inngest
 
 ### Workflow: `app-monitor-workflow`
-1. **collect-app-pay-urls** - Reads `APP_URLS` env var (comma-separated, format: `Name|URL`)
-2. **verify-app-liveness** (forEach, concurrency: 5) - HTTP GET check for each URL
-3. **compile-verification-report** - Aggregates results into live/non-live lists
+1. **collect-app-pay-urls** - Reads `APP_URLS` env var (comma-separated, format: `Name|URL|WatchWord`)
+2. **verify-app-liveness** (forEach, concurrency: 5) - HTTP GET check for each URL + optional watch word scan in response body
+3. **compile-verification-report** - Aggregates results into live/down/warning lists
 4. **Branch**:
-   - If any apps are down → `notify-non-live-apps` (agent sends alert email)
-   - If all apps are live → `confirm-all-apps-live` (agent sends confirmation email)
+   - If any apps are down or have watch word warnings → `notify-non-live-apps` (agent sends alert email)
+   - If all apps are live and healthy → `confirm-all-apps-live` (agent sends confirmation email)
 
 ### Agent: `monitorAgent`
 - Model: GPT-4o via Replit AI Integrations
@@ -35,7 +36,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - `src/mastra/index.ts` - Registration and cron trigger setup
 
 ### Environment Variables
-- `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL` or just `URL`
+- `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|WatchWord`, `Name|URL`, or just `URL`. The optional watch word triggers a warning if found in the page content.
 - `SCHEDULE_CRON_EXPRESSION` - Cron expression override (default: `0 */6 * * *`)
 
 ## User Preferences

@@ -1,9 +1,10 @@
 # App Monitor - "I Got Your Back"
 
 ## Overview
-A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy.
+A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present).
 
 ## Recent Changes
+- 2026-02-11: Added dual content scanning — biotics (+) for healthy signals that must be present, warnings (-) for bad signals that must be absent
 - 2026-02-11: Added "watch word" support — per-URL keyword detection (multiple words via semicolon) that triggers warnings even when the app returns 200 OK
 - 2026-02-10: Initial build of the monitoring automation
 
@@ -15,11 +16,11 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - **Engine**: Inngest
 
 ### Workflow: `app-monitor-workflow`
-1. **collect-app-pay-urls** - Reads `APP_URLS` env var (comma-separated, format: `Name|URL|WatchWord`)
-2. **verify-app-liveness** (forEach, concurrency: 5) - HTTP GET check for each URL + optional watch word scan in response body
-3. **compile-verification-report** - Aggregates results into live/down/warning lists
+1. **collect-app-pay-urls** - Reads `APP_URLS` env var (comma-separated, format: `Name|URL|+biotic;-warning`)
+2. **verify-app-liveness** (forEach, concurrency: 5) - HTTP GET check for each URL + optional content scan for biotics and warnings
+3. **compile-verification-report** - Aggregates results into healthy/down/issue lists
 4. **Branch**:
-   - If any apps are down or have watch word warnings → `notify-non-live-apps` (agent sends alert email)
+   - If any apps are down or have content issues → `notify-non-live-apps` (agent sends alert email)
    - If all apps are live and healthy → `confirm-all-apps-live` (agent sends confirmation email)
 
 ### Agent: `monitorAgent`
@@ -36,7 +37,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - `src/mastra/index.ts` - Registration and cron trigger setup
 
 ### Environment Variables
-- `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|WatchWord`, `Name|URL`, or just `URL`. The optional watch word triggers a warning if found in the page content. Multiple watch words can be separated by semicolons (e.g., `Name|URL|error;maintenance;offline`).
+- `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|signals`, `Name|URL`, or just `URL`. Signals use semicolons to separate multiple entries. Prefix with `+` for biotics (healthy signals that SHOULD be present) or `-` for warnings (bad signals that SHOULD NOT be present). Unprefixed words default to warnings. Example: `My App|https://myapp.replit.app|+welcome;+operational;-error;-maintenance`
 - `SCHEDULE_CRON_EXPRESSION` - Cron expression override (default: `0 */6 * * *`)
 
 ## User Preferences

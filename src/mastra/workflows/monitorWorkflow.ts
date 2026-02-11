@@ -10,8 +10,11 @@ const appResultSchema = z.object({
   responseTimeMs: z.number(),
   error: z.string().optional(),
   checkedAt: z.string(),
-  watchWords: z.array(z.string()).optional(),
-  watchWordsFound: z.array(z.string()).optional(),
+  biotics: z.array(z.string()).optional(),
+  bioticsMissing: z.array(z.string()).optional(),
+  warnings: z.array(z.string()).optional(),
+  warningsFound: z.array(z.string()).optional(),
+  hasIssues: z.boolean().optional(),
 });
 
 const collectAppUrls = createStep({
@@ -24,7 +27,8 @@ const collectAppUrls = createStep({
     z.object({
       url: z.string(),
       name: z.string(),
-      watchWords: z.array(z.string()).optional(),
+      biotics: z.array(z.string()).optional(),
+      warnings: z.array(z.string()).optional(),
     })
   ),
 
@@ -46,19 +50,47 @@ const collectAppUrls = createStep({
 
     const apps = entries.map((entry) => {
       const parts = entry.split("|").map((s) => s.trim());
+
+      let name: string;
+      let url: string;
+      let biotics: string[] = [];
+      let warnings: string[] = [];
+
       if (parts.length >= 3) {
-        const watchWords = parts[2].split(";").map((w) => w.trim()).filter((w) => w.length > 0);
-        return { name: parts[0], url: parts[1], watchWords };
+        name = parts[0];
+        url = parts[1];
+        const words = parts[2].split(";").map((w) => w.trim()).filter((w) => w.length > 0);
+        for (const word of words) {
+          if (word.startsWith("+")) {
+            biotics.push(word.slice(1));
+          } else if (word.startsWith("-")) {
+            warnings.push(word.slice(1));
+          } else {
+            warnings.push(word);
+          }
+        }
       } else if (parts.length === 2) {
-        return { name: parts[0], url: parts[1] };
+        name = parts[0];
+        url = parts[1];
+      } else {
+        url = entry;
+        const urlObj = new URL(entry);
+        name = urlObj.hostname.replace(".replit.app", "").replace(/[.-]/g, " ");
       }
-      const urlObj = new URL(entry);
-      const name = urlObj.hostname.replace(".replit.app", "").replace(/[.-]/g, " ");
-      return { name, url: entry };
+
+      const result: any = { name, url };
+      if (biotics.length > 0) result.biotics = biotics;
+      if (warnings.length > 0) result.warnings = warnings;
+      return result;
     });
 
     logger?.info(`✅ [collectAppUrls] Found ${apps.length} app(s) to monitor:`, {
-      apps: apps.map((a) => `${a.name} (${a.url})${a.watchWords?.length ? ` [watching for: ${a.watchWords.map((w) => `"${w}"`).join(", ")}]` : ""}`),
+      apps: apps.map((a: any) => {
+        let desc = `${a.name} (${a.url})`;
+        if (a.biotics?.length) desc += ` [biotics: ${a.biotics.map((w: string) => `"${w}"`).join(", ")}]`;
+        if (a.warnings?.length) desc += ` [warnings: ${a.warnings.map((w: string) => `"${w}"`).join(", ")}]`;
+        return desc;
+      }),
     });
 
     return apps;
@@ -67,20 +99,24 @@ const collectAppUrls = createStep({
 
 const verifyAppLiveness = createStep({
   id: "verify-app-liveness",
-  description: "Checks a single app URL for live status and scans for watch words in the response",
+  description: "Checks a single app URL for live status, scans for biotics (healthy signals) and warnings (bad signals)",
 
   inputSchema: z.object({
     url: z.string(),
     name: z.string(),
-    watchWords: z.array(z.string()).optional(),
+    biotics: z.array(z.string()).optional(),
+    warnings: z.array(z.string()).optional(),
   }),
 
   outputSchema: appResultSchema,
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    const watchList = inputData.watchWords || [];
-    logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${watchList.length ? ` | watch words: ${watchList.map((w) => `"${w}"`).join(", ")}` : ""}`);
+    const bioticsList = inputData.biotics || [];
+    const warningsList = inputData.warnings || [];
+    const hasScanWords = bioticsList.length > 0 || warningsList.length > 0;
+
+    logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${bioticsList.length ? ` | biotics (+): ${bioticsList.map((w) => `"${w}"`).join(", ")}` : ""}${warningsList.length ? ` | warnings (-): ${warningsList.map((w) => `"${w}"`).join(", ")}` : ""}`);
 
     const startTime = Date.now();
 
@@ -99,39 +135,60 @@ const verifyAppLiveness = createStep({
       const responseTimeMs = Date.now() - startTime;
       const isLive = resp.status >= 200 && resp.status < 400;
 
-      const watchWordsFound: string[] = [];
-      if (watchList.length > 0 && isLive) {
+      const bioticsMissing: string[] = [];
+      const warningsFound: string[] = [];
+
+      if (hasScanWords && isLive) {
         try {
           const body = await resp.text();
           const bodyLower = body.toLowerCase();
-          for (const word of watchList) {
-            if (bodyLower.includes(word.toLowerCase())) {
-              watchWordsFound.push(word);
+
+          for (const word of bioticsList) {
+            if (!bodyLower.includes(word.toLowerCase())) {
+              bioticsMissing.push(word);
               logger?.warn(
-                `⚠️ [verifyAppLiveness] ${inputData.name}: Watch word "${word}" FOUND in response body!`
+                `🦠 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" MISSING from response body!`
+              );
+            } else {
+              logger?.info(
+                `🌿 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" confirmed present`
+              );
+            }
+          }
+
+          for (const word of warningsList) {
+            if (bodyLower.includes(word.toLowerCase())) {
+              warningsFound.push(word);
+              logger?.warn(
+                `⚠️ [verifyAppLiveness] ${inputData.name}: Warning word "${word}" FOUND in response body!`
               );
             }
           }
         } catch (e) {
-          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for watch word check`);
+          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for content scan`);
         }
       }
 
-      const hasWarnings = watchWordsFound.length > 0;
+      const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0;
 
-      logger?.info(
-        `${isLive && !hasWarnings ? "✅" : isLive && hasWarnings ? "⚠️" : "❌"} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms${hasWarnings ? `, watch words found: ${watchWordsFound.map((w) => `"${w}"`).join(", ")}` : ""}`
-      );
+      const icon = !isLive ? "❌" : hasIssues ? "⚠️" : "✅";
+      let statusMsg = `${icon} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms`;
+      if (bioticsMissing.length > 0) statusMsg += `, missing biotics: ${bioticsMissing.map((w) => `"${w}"`).join(", ")}`;
+      if (warningsFound.length > 0) statusMsg += `, warnings found: ${warningsFound.map((w) => `"${w}"`).join(", ")}`;
+      logger?.info(statusMsg);
 
       return {
         url: inputData.url,
         name: inputData.name,
-        isLive: isLive && !hasWarnings,
+        isLive: isLive && !hasIssues,
         statusCode: resp.status,
         responseTimeMs,
         checkedAt: new Date().toISOString(),
-        watchWords: watchList,
-        watchWordsFound,
+        biotics: bioticsList,
+        bioticsMissing,
+        warnings: warningsList,
+        warningsFound,
+        hasIssues,
       };
     } catch (error) {
       const responseTimeMs = Date.now() - startTime;
@@ -147,8 +204,11 @@ const verifyAppLiveness = createStep({
         responseTimeMs,
         error: errorMessage,
         checkedAt: new Date().toISOString(),
-        watchWords: watchList,
-        watchWordsFound: [],
+        biotics: bioticsList,
+        bioticsMissing: [],
+        warnings: warningsList,
+        warningsFound: [],
+        hasIssues: false,
       };
     }
   },
@@ -164,9 +224,8 @@ const compileVerificationReport = createStep({
     totalApps: z.number(),
     liveApps: z.array(appResultSchema),
     nonLiveApps: z.array(appResultSchema),
-    warningApps: z.array(appResultSchema),
-    hasNonLiveApps: z.boolean(),
-    hasWarnings: z.boolean(),
+    issueApps: z.array(appResultSchema),
+    hasProblems: z.boolean(),
     reportTimestamp: z.string(),
     summaryText: z.string(),
   }),
@@ -175,13 +234,13 @@ const compileVerificationReport = createStep({
     const logger = mastra?.getLogger();
     logger?.info(`📊 [compileReport] Compiling report for ${inputData.length} app(s)...`);
 
-    const warningApps = inputData.filter((app) => (app.watchWordsFound?.length ?? 0) > 0);
-    const nonLiveApps = inputData.filter((app) => !app.isLive && (app.watchWordsFound?.length ?? 0) === 0);
-    const liveApps = inputData.filter((app) => app.isLive && (app.watchWordsFound?.length ?? 0) === 0);
+    const issueApps = inputData.filter((app) => app.hasIssues === true);
+    const nonLiveApps = inputData.filter((app) => !app.isLive && !app.hasIssues);
+    const liveApps = inputData.filter((app) => app.isLive && !app.hasIssues);
 
     const summaryLines = [
       `App Monitor Report - ${new Date().toISOString()}`,
-      `Total: ${inputData.length} | Live: ${liveApps.length} | Down: ${nonLiveApps.length} | Warnings: ${warningApps.length}`,
+      `Total: ${inputData.length} | Healthy: ${liveApps.length} | Down: ${nonLiveApps.length} | Issues: ${issueApps.length}`,
       "",
     ];
 
@@ -193,16 +252,23 @@ const compileVerificationReport = createStep({
       summaryLines.push("");
     }
 
-    if (warningApps.length > 0) {
-      summaryLines.push("WARNING APPS (watch word detected):");
-      warningApps.forEach((app) => {
-        summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, watch words found: ${(app.watchWordsFound || []).map((w) => `"${w}"`).join(", ")}`);
+    if (issueApps.length > 0) {
+      summaryLines.push("ISSUE APPS (content scan triggered):");
+      issueApps.forEach((app) => {
+        const parts: string[] = [];
+        if ((app.bioticsMissing?.length ?? 0) > 0) {
+          parts.push(`missing biotics: ${app.bioticsMissing!.map((w) => `"${w}"`).join(", ")}`);
+        }
+        if ((app.warningsFound?.length ?? 0) > 0) {
+          parts.push(`warning words found: ${app.warningsFound!.map((w) => `"${w}"`).join(", ")}`);
+        }
+        summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, ${parts.join(" | ")}`);
       });
       summaryLines.push("");
     }
 
     if (liveApps.length > 0) {
-      summaryLines.push("LIVE APPS:");
+      summaryLines.push("HEALTHY APPS:");
       liveApps.forEach((app) => {
         summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, ${app.responseTimeMs}ms`);
       });
@@ -216,9 +282,8 @@ const compileVerificationReport = createStep({
       totalApps: inputData.length,
       liveApps,
       nonLiveApps,
-      warningApps,
-      hasNonLiveApps: nonLiveApps.length > 0 || warningApps.length > 0,
-      hasWarnings: warningApps.length > 0,
+      issueApps,
+      hasProblems: nonLiveApps.length > 0 || issueApps.length > 0,
       reportTimestamp: new Date().toISOString(),
       summaryText,
     };
@@ -229,16 +294,15 @@ const reportSchema = z.object({
   totalApps: z.number(),
   liveApps: z.array(appResultSchema),
   nonLiveApps: z.array(appResultSchema),
-  warningApps: z.array(appResultSchema),
-  hasNonLiveApps: z.boolean(),
-  hasWarnings: z.boolean(),
+  issueApps: z.array(appResultSchema),
+  hasProblems: z.boolean(),
   reportTimestamp: z.string(),
   summaryText: z.string(),
 });
 
 const notifyNonLiveApps = createStep({
   id: "notify-non-live-apps",
-  description: "Sends an urgent email notification about apps that are down or have watch word warnings",
+  description: "Sends an urgent email notification about apps that are down or have content issues",
 
   inputSchema: reportSchema,
 
@@ -249,24 +313,34 @@ const notifyNonLiveApps = createStep({
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info(`🚨 [notifyNonLive] ${inputData.nonLiveApps.length} app(s) down, ${inputData.warningApps.length} warning(s)! Sending alert...`);
+    logger?.info(`🚨 [notifyNonLive] ${inputData.nonLiveApps.length} app(s) down, ${inputData.issueApps.length} issue(s)! Sending alert...`);
 
     const downSection = inputData.nonLiveApps.length > 0
       ? `\nDOWN apps:\n${inputData.nonLiveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}${app.error ? `, Error: ${app.error}` : ""}`).join("\n")}`
       : "";
 
-    const warningSection = inputData.warningApps.length > 0
-      ? `\nWARNING apps (watch words detected in page content):\n${inputData.warningApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, watch words found: ${(app.watchWordsFound || []).map((w) => `"${w}"`).join(", ")}`).join("\n")}`
+    const issueLines: string[] = [];
+    for (const app of inputData.issueApps) {
+      let detail = `- ${app.name} (${app.url}): HTTP ${app.statusCode}`;
+      if ((app.bioticsMissing?.length ?? 0) > 0) {
+        detail += `\n  Missing healthy signals (biotics): ${app.bioticsMissing!.map((w) => `"${w}"`).join(", ")} — these words SHOULD be on the page but are NOT`;
+      }
+      if ((app.warningsFound?.length ?? 0) > 0) {
+        detail += `\n  Warning words detected: ${app.warningsFound!.map((w) => `"${w}"`).join(", ")} — these words SHOULD NOT be on the page but ARE`;
+      }
+      issueLines.push(detail);
+    }
+    const issueSection = issueLines.length > 0
+      ? `\nISSUE apps (content scan triggered):\n${issueLines.join("\n")}`
       : "";
 
     const liveSection = inputData.liveApps.length > 0
-      ? `\nLIVE apps:\n${inputData.liveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, ${app.responseTimeMs}ms`).join("\n")}`
+      ? `\nHEALTHY apps:\n${inputData.liveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, ${app.responseTimeMs}ms`).join("\n")}`
       : "";
 
-    const issueCount = inputData.nonLiveApps.length + inputData.warningApps.length;
     const subjectParts = [];
     if (inputData.nonLiveApps.length > 0) subjectParts.push(`${inputData.nonLiveApps.length} Down`);
-    if (inputData.warningApps.length > 0) subjectParts.push(`${inputData.warningApps.length} Warning(s)`);
+    if (inputData.issueApps.length > 0) subjectParts.push(`${inputData.issueApps.length} Issue(s)`);
     const subject = `ALERT: ${subjectParts.join(", ")}`;
 
     const response = await monitorAgent.generateLegacy(
@@ -278,15 +352,17 @@ const notifyNonLiveApps = createStep({
 Here is the monitoring report:
 - Total apps checked: ${inputData.totalApps}
 - Apps that are DOWN: ${inputData.nonLiveApps.length}
-- Apps with WARNINGS: ${inputData.warningApps.length}
-- Apps that are LIVE: ${inputData.liveApps.length}
-${downSection}${warningSection}${liveSection}
+- Apps with ISSUES: ${inputData.issueApps.length}
+- Apps that are HEALTHY: ${inputData.liveApps.length}
+${downSection}${issueSection}${liveSection}
 
 Send an email with subject "${subject}" using the send-email-notification tool.
 Include a professional HTML email with:
 - Red highlighting for down apps
-- Orange/yellow highlighting for warning apps (where a watch word was detected in the page content even though the app returned a success status)
-- Green for live apps
+- Orange/yellow highlighting for issue apps. Clearly explain:
+  - "Missing biotics" means healthy signals that SHOULD appear on the page but are ABSENT (like a vital sign going flat)
+  - "Warning words" means bad signals that SHOULD NOT appear on the page but WERE FOUND
+- Green for healthy apps
 Include the timestamp: ${inputData.reportTimestamp}`,
         },
       ],
@@ -297,7 +373,7 @@ Include the timestamp: ${inputData.reportTimestamp}`,
 
     return {
       notified: true,
-      message: `Alert sent: ${inputData.nonLiveApps.length} down, ${inputData.warningApps.length} warning(s)`,
+      message: `Alert sent: ${inputData.nonLiveApps.length} down, ${inputData.issueApps.length} issue(s)`,
     };
   },
 });
@@ -325,7 +401,7 @@ const confirmAllAppsLive = createStep({
 
 Here is the monitoring report:
 - Total apps checked: ${inputData.totalApps}
-- All apps are LIVE
+- All apps are HEALTHY (all biotics confirmed present, no warning words detected)
 
 App details:
 ${inputData.liveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, response time: ${app.responseTimeMs}ms`).join("\n")}
@@ -362,11 +438,11 @@ export const monitorWorkflow = createWorkflow({
   .then(compileVerificationReport as any)
   .branch([
     [
-      async ({ inputData }: any) => inputData.hasNonLiveApps === true,
+      async ({ inputData }: any) => inputData.hasProblems === true,
       notifyNonLiveApps as any,
     ],
     [
-      async ({ inputData }: any) => inputData.hasNonLiveApps === false,
+      async ({ inputData }: any) => inputData.hasProblems === false,
       confirmAllAppsLive as any,
     ],
   ])

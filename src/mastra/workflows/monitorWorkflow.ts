@@ -1,7 +1,9 @@
 import { createStep, createWorkflow } from "../inngest";
 import { z } from "zod";
 import * as tls from "node:tls";
+import * as crypto from "node:crypto";
 import { monitorAgent } from "../agents/monitorAgent";
+import { getAppState, updateAppState } from "../../utils/appState";
 
 const appResultSchema = z.object({
   url: z.string(),
@@ -18,6 +20,9 @@ const appResultSchema = z.object({
   hasIssues: z.boolean().optional(),
   sslDaysRemaining: z.number().optional(),
   sslExpiring: z.boolean().optional(),
+  contentChanged: z.boolean().optional(),
+  consecutiveFailures: z.number().optional(),
+  consecutiveSlow: z.number().optional(),
 });
 
 const collectAppUrls = createStep({
@@ -136,11 +141,22 @@ const verifyAppLiveness = createStep({
     const warningsList = inputData.warnings || [];
     const hasScanWords = bioticsList.length > 0 || warningsList.length > 0;
     const SLOW_THRESHOLD_MS = 5000;
+    const CONSECUTIVE_SLOW_THRESHOLD = 2;
     const MAX_RETRIES = 1;
 
     logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${bioticsList.length ? ` | biotics (+): ${bioticsList.map((w) => `"${w}"`).join(", ")}` : ""}${warningsList.length ? ` | warnings (-): ${warningsList.map((w) => `"${w}"`).join(", ")}` : ""}`);
 
     const SSL_EXPIRY_WARNING_DAYS = 14;
+
+    let previousState = null as Awaited<ReturnType<typeof getAppState>>;
+    try {
+      previousState = await getAppState(inputData.url);
+      if (previousState) {
+        logger?.info(`📊 [verifyAppLiveness] ${inputData.name}: Previous state — failures: ${previousState.consecutive_failures}, slow: ${previousState.consecutive_slow}, has content hash: ${!!previousState.content_hash}`);
+      }
+    } catch (e) {
+      logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read previous state: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     async function attemptFetch(): Promise<{ resp: Response; responseTimeMs: number }> {
       const startTime = Date.now();
@@ -221,37 +237,64 @@ const verifyAppLiveness = createStep({
 
         const bioticsMissing: string[] = [];
         const warningsFound: string[] = [];
-        const isSlow = responseTimeMs > SLOW_THRESHOLD_MS;
+        const isCurrentlySlow = responseTimeMs > SLOW_THRESHOLD_MS;
 
-        if (hasScanWords && isLive) {
+        let contentChanged = false;
+        let contentHash: string | undefined;
+        let bodyText = "";
+
+        if (isLive) {
           try {
-            const body = await resp.text();
-            const bodyLower = body.toLowerCase();
+            bodyText = await resp.text();
+            const bodyLower = bodyText.toLowerCase();
 
-            for (const word of bioticsList) {
-              if (!bodyLower.includes(word.toLowerCase())) {
-                bioticsMissing.push(word);
-                logger?.warn(
-                  `🦠 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" MISSING from response body!`
-                );
-              } else {
-                logger?.info(
-                  `🌿 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" confirmed present`
-                );
-              }
+            contentHash = crypto.createHash("md5").update(bodyText).digest("hex");
+
+            if (previousState?.content_hash && previousState.content_hash !== contentHash) {
+              contentChanged = true;
+              logger?.warn(`🔄 [verifyAppLiveness] ${inputData.name}: Page content has CHANGED since last check`);
+            } else if (!previousState?.content_hash) {
+              logger?.info(`📝 [verifyAppLiveness] ${inputData.name}: First content hash recorded: ${contentHash.slice(0, 8)}...`);
+            } else {
+              logger?.info(`✅ [verifyAppLiveness] ${inputData.name}: Content unchanged (hash: ${contentHash.slice(0, 8)}...)`);
             }
 
-            for (const word of warningsList) {
-              if (bodyLower.includes(word.toLowerCase())) {
-                warningsFound.push(word);
-                logger?.warn(
-                  `⚠️ [verifyAppLiveness] ${inputData.name}: Warning word "${word}" FOUND in response body!`
-                );
+            if (hasScanWords) {
+              for (const word of bioticsList) {
+                if (!bodyLower.includes(word.toLowerCase())) {
+                  bioticsMissing.push(word);
+                  logger?.warn(
+                    `🦠 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" MISSING from response body!`
+                  );
+                } else {
+                  logger?.info(
+                    `🌿 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" confirmed present`
+                  );
+                }
+              }
+
+              for (const word of warningsList) {
+                if (bodyLower.includes(word.toLowerCase())) {
+                  warningsFound.push(word);
+                  logger?.warn(
+                    `⚠️ [verifyAppLiveness] ${inputData.name}: Warning word "${word}" FOUND in response body!`
+                  );
+                }
               }
             }
           } catch (e) {
             logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for content scan`);
           }
+        }
+
+        const prevConsecutiveSlow = previousState?.consecutive_slow ?? 0;
+        const newConsecutiveSlow = isCurrentlySlow ? prevConsecutiveSlow + 1 : 0;
+        const isSlow = newConsecutiveSlow >= CONSECUTIVE_SLOW_THRESHOLD;
+
+        if (isCurrentlySlow && !isSlow) {
+          logger?.info(`🐢 [verifyAppLiveness] ${inputData.name}: Slow response (${responseTimeMs}ms) but only ${newConsecutiveSlow}/${CONSECUTIVE_SLOW_THRESHOLD} consecutive — not flagging yet`);
+        } else if (isSlow) {
+          logger?.warn(`🐢 [verifyAppLiveness] ${inputData.name}: Slow response ${responseTimeMs}ms — ${newConsecutiveSlow} consecutive slow checks (threshold: ${CONSECUTIVE_SLOW_THRESHOLD})`);
         }
 
         let sslDaysRemaining: number | undefined;
@@ -268,25 +311,36 @@ const verifyAppLiveness = createStep({
           }
         }
 
-        const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0 || isSlow || sslExpiring;
+        const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0 || isSlow || sslExpiring || contentChanged;
 
-        if (isSlow) {
-          logger?.warn(`🐢 [verifyAppLiveness] ${inputData.name}: Response time ${responseTimeMs}ms exceeds ${SLOW_THRESHOLD_MS}ms threshold`);
+        const newConsecutiveFailures = (isLive && !hasIssues) ? 0 : (previousState?.consecutive_failures ?? 0) + 1;
+
+        try {
+          await updateAppState(inputData.url, {
+            contentHash,
+            consecutiveFailures: isLive ? (hasIssues ? newConsecutiveFailures : 0) : newConsecutiveFailures,
+            consecutiveSlow: newConsecutiveSlow,
+            lastStatus: isLive ? (hasIssues ? "issues" : "healthy") : "down",
+          });
+        } catch (e) {
+          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not update state: ${e instanceof Error ? e.message : String(e)}`);
         }
 
         const icon = !isLive ? "❌" : hasIssues ? "⚠️" : "✅";
         let statusMsg = `${icon} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms`;
         if (bioticsMissing.length > 0) statusMsg += `, missing biotics: ${bioticsMissing.map((w) => `"${w}"`).join(", ")}`;
         if (warningsFound.length > 0) statusMsg += `, warnings found: ${warningsFound.map((w) => `"${w}"`).join(", ")}`;
-        if (isSlow) statusMsg += `, SLOW RESPONSE`;
+        if (isSlow) statusMsg += `, SLOW RESPONSE (${newConsecutiveSlow} consecutive)`;
         if (sslExpiring) statusMsg += `, SSL EXPIRING (${sslDaysRemaining}d)`;
+        if (contentChanged) statusMsg += `, CONTENT CHANGED`;
         if (attempt > 0) statusMsg += ` (confirmed after retry)`;
+        statusMsg += `, failures: ${newConsecutiveFailures}`;
         logger?.info(statusMsg);
 
         return {
           url: inputData.url,
           name: inputData.name,
-          isLive: isLive && !hasIssues,
+          isLive,
           statusCode: resp.status,
           responseTimeMs,
           checkedAt: new Date().toISOString(),
@@ -297,6 +351,9 @@ const verifyAppLiveness = createStep({
           hasIssues,
           sslDaysRemaining,
           sslExpiring,
+          contentChanged,
+          consecutiveFailures: newConsecutiveFailures,
+          consecutiveSlow: newConsecutiveSlow,
         };
       } catch (error) {
         lastResponseTimeMs = Date.now() - attemptStartTime;
@@ -307,7 +364,19 @@ const verifyAppLiveness = createStep({
           continue;
         }
 
-        logger?.error(`❌ [verifyAppLiveness] ${inputData.name}: Failed after ${attempt + 1} attempt(s) - ${lastError}`);
+        const newConsecutiveFailures = (previousState?.consecutive_failures ?? 0) + 1;
+
+        try {
+          await updateAppState(inputData.url, {
+            consecutiveFailures: newConsecutiveFailures,
+            consecutiveSlow: 0,
+            lastStatus: "down",
+          });
+        } catch (e) {
+          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not update state: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
+        logger?.error(`❌ [verifyAppLiveness] ${inputData.name}: Failed after ${attempt + 1} attempt(s) - ${lastError}, consecutive failures: ${newConsecutiveFailures}`);
 
         return {
           url: inputData.url,
@@ -322,8 +391,21 @@ const verifyAppLiveness = createStep({
           warnings: warningsList,
           warningsFound: [],
           hasIssues: false,
+          consecutiveFailures: newConsecutiveFailures,
         };
       }
+    }
+
+    const finalConsecutiveFailures = (previousState?.consecutive_failures ?? 0) + 1;
+
+    try {
+      await updateAppState(inputData.url, {
+        consecutiveFailures: finalConsecutiveFailures,
+        consecutiveSlow: 0,
+        lastStatus: "down",
+      });
+    } catch (e) {
+      logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not update state: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     return {
@@ -339,6 +421,7 @@ const verifyAppLiveness = createStep({
       warnings: warningsList,
       warningsFound: [],
       hasIssues: false,
+      consecutiveFailures: finalConsecutiveFailures,
     };
   },
 });
@@ -357,6 +440,8 @@ const compileVerificationReport = createStep({
     hasProblems: z.boolean(),
     reportTimestamp: z.string(),
     summaryText: z.string(),
+    groupedFailure: z.boolean().optional(),
+    alertTone: z.string().optional(),
   }),
 
   execute: async ({ inputData, mastra }) => {
@@ -376,11 +461,25 @@ const compileVerificationReport = createStep({
       };
     }
 
-    const issueApps = inputData.filter((app) => app.hasIssues === true);
-    const nonLiveApps = inputData.filter((app) => !app.isLive && !app.hasIssues);
+    const nonLiveApps = inputData.filter((app) => !app.isLive);
+    const issueApps = inputData.filter((app) => app.isLive && app.hasIssues === true);
     const liveApps = inputData.filter((app) => app.isLive && !app.hasIssues);
 
-    const SLOW_THRESHOLD_MS = 5000;
+    const groupedFailure = nonLiveApps.length >= 2;
+    if (groupedFailure) {
+      logger?.warn(`🔗 [compileReport] ${nonLiveApps.length} apps failed simultaneously — possible shared dependency issue`);
+    }
+
+    const problemApps = [...nonLiveApps, ...issueApps];
+    const maxConsecutiveFailures = Math.max(0, ...problemApps.map((a) => a.consecutiveFailures ?? 0));
+    let alertTone: string;
+    if (maxConsecutiveFailures <= 1) {
+      alertTone = "calm";
+    } else if (maxConsecutiveFailures <= 3) {
+      alertTone = "urgent";
+    } else {
+      alertTone = "brief";
+    }
 
     const summaryLines = [
       `Backcheck Report - ${new Date().toISOString()}`,
@@ -388,16 +487,25 @@ const compileVerificationReport = createStep({
       "",
     ];
 
+    if (groupedFailure) {
+      summaryLines.push("⚠️ GROUPED FAILURE: Multiple apps failed simultaneously — possible shared dependency issue");
+      summaryLines.push("");
+    }
+
     if (nonLiveApps.length > 0) {
       summaryLines.push("DOWN APPS:");
       nonLiveApps.forEach((app) => {
-        summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}${app.error ? `, error: ${app.error}` : ""}`);
+        let line = `  - ${app.name} (${app.url}): status=${app.statusCode}${app.error ? `, error: ${app.error}` : ""}`;
+        if (app.consecutiveFailures && app.consecutiveFailures > 1) {
+          line += ` (consecutive failure #${app.consecutiveFailures})`;
+        }
+        summaryLines.push(line);
       });
       summaryLines.push("");
     }
 
     if (issueApps.length > 0) {
-      summaryLines.push("ISSUE APPS (content scan triggered):");
+      summaryLines.push("ISSUE APPS:");
       issueApps.forEach((app) => {
         const parts: string[] = [];
         if ((app.bioticsMissing?.length ?? 0) > 0) {
@@ -406,11 +514,17 @@ const compileVerificationReport = createStep({
         if ((app.warningsFound?.length ?? 0) > 0) {
           parts.push(`warning words found: ${app.warningsFound!.map((w) => `"${w}"`).join(", ")}`);
         }
-        if (app.responseTimeMs > SLOW_THRESHOLD_MS) {
-          parts.push(`slow response: ${app.responseTimeMs}ms`);
+        if ((app.consecutiveSlow ?? 0) >= 2) {
+          parts.push(`slow response: ${app.responseTimeMs}ms (${app.consecutiveSlow} consecutive)`);
         }
         if (app.sslExpiring) {
           parts.push(`SSL cert expires in ${app.sslDaysRemaining} day(s)`);
+        }
+        if (app.contentChanged) {
+          parts.push(`page content changed since last check`);
+        }
+        if (app.consecutiveFailures && app.consecutiveFailures > 1) {
+          parts.push(`consecutive issue #${app.consecutiveFailures}`);
         }
         summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, ${parts.join(" | ")}`);
       });
@@ -430,7 +544,7 @@ const compileVerificationReport = createStep({
 
     const summaryText = summaryLines.join("\n");
 
-    logger?.info(`📊 [compileReport] Report compiled:`, { summaryText });
+    logger?.info(`📊 [compileReport] Report compiled (tone: ${alertTone}):`, { summaryText });
 
     return {
       totalApps: inputData.length,
@@ -440,6 +554,8 @@ const compileVerificationReport = createStep({
       hasProblems: nonLiveApps.length > 0 || issueApps.length > 0,
       reportTimestamp: new Date().toISOString(),
       summaryText,
+      groupedFailure,
+      alertTone,
     };
   },
 });
@@ -452,6 +568,8 @@ const reportSchema = z.object({
   hasProblems: z.boolean(),
   reportTimestamp: z.string(),
   summaryText: z.string(),
+  groupedFailure: z.boolean().optional(),
+  alertTone: z.string().optional(),
 });
 
 const notifyNonLiveApps = createStep({
@@ -467,10 +585,17 @@ const notifyNonLiveApps = createStep({
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info(`🚨 [notifyNonLive] ${inputData.nonLiveApps.length} app(s) down, ${inputData.issueApps.length} issue(s)! Sending alert...`);
+    const tone = inputData.alertTone || "calm";
+    logger?.info(`🚨 [notifyNonLive] ${inputData.nonLiveApps.length} app(s) down, ${inputData.issueApps.length} issue(s)! Tone: ${tone}. Sending alert...`);
 
     const downSection = inputData.nonLiveApps.length > 0
-      ? `\nDOWN apps:\n${inputData.nonLiveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}${app.error ? `, Error: ${app.error}` : ""}`).join("\n")}`
+      ? `\nDOWN apps:\n${inputData.nonLiveApps.map((app) => {
+          let line = `- ${app.name} (${app.url}): HTTP ${app.statusCode}${app.error ? `, Error: ${app.error}` : ""}`;
+          if (app.consecutiveFailures && app.consecutiveFailures > 1) {
+            line += ` (consecutive failure #${app.consecutiveFailures})`;
+          }
+          return line;
+        }).join("\n")}`
       : "";
 
     const issueLines: string[] = [];
@@ -482,20 +607,30 @@ const notifyNonLiveApps = createStep({
       if ((app.warningsFound?.length ?? 0) > 0) {
         detail += `\n  Warning words detected: ${app.warningsFound!.map((w) => `"${w}"`).join(", ")} — these words SHOULD NOT be on the page but ARE`;
       }
-      if (app.responseTimeMs > 5000) {
-        detail += `\n  Slow response: ${app.responseTimeMs}ms (threshold: 5000ms) — the app is responding too slowly for a good user experience`;
+      if ((app.consecutiveSlow ?? 0) >= 2) {
+        detail += `\n  Slow response: ${app.responseTimeMs}ms — ${app.consecutiveSlow} consecutive slow checks`;
       }
       if (app.sslExpiring) {
         detail += `\n  SSL certificate expiring in ${app.sslDaysRemaining} day(s) — users will see browser security warnings when it expires`;
       }
+      if (app.contentChanged) {
+        detail += `\n  ⚠️ Page content has CHANGED since last check — possible accidental deploy, hack, or wrong environment`;
+      }
+      if (app.consecutiveFailures && app.consecutiveFailures > 1) {
+        detail += `\n  This is consecutive issue #${app.consecutiveFailures}`;
+      }
       issueLines.push(detail);
     }
     const issueSection = issueLines.length > 0
-      ? `\nISSUE apps (content scan triggered):\n${issueLines.join("\n")}`
+      ? `\nISSUE apps:\n${issueLines.join("\n")}`
       : "";
 
     const liveSection = inputData.liveApps.length > 0
       ? `\nHEALTHY apps:\n${inputData.liveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.statusCode}, ${app.responseTimeMs}ms`).join("\n")}`
+      : "";
+
+    const groupedNote = inputData.groupedFailure
+      ? "\n⚠️ GROUPED FAILURE: Multiple apps failed simultaneously. This may indicate a shared dependency issue (DNS, hosting provider, shared backend).\n"
       : "";
 
     const subjectParts = [];
@@ -503,18 +638,29 @@ const notifyNonLiveApps = createStep({
     if (inputData.issueApps.length > 0) subjectParts.push(`${inputData.issueApps.length} Issue(s)`);
     const subject = `ALERT: ${subjectParts.join(", ")}`;
 
+    let toneGuidance: string;
+    if (tone === "calm") {
+      toneGuidance = `TONE: CALM — This is the first detection of these issues. Write a measured, diagnostic email. Include full details about what was found. Start with "Backcheck detected the following during a routine check." Be thorough but not alarming.`;
+    } else if (tone === "urgent") {
+      toneGuidance = `TONE: URGENT — These issues have persisted across multiple consecutive checks. Write a concise, urgent email. Emphasize that this is an ongoing issue, not a transient blip. Start with "Backcheck has detected a persistent issue." Be direct and action-oriented.`;
+    } else {
+      toneGuidance = `TONE: BRIEF — This is an ongoing, known issue that has been reported before. Write a very short status update email. Do NOT repeat the full diagnostic — just state "Still down/affected" with current stats. Start with "Backcheck status update:" Keep it to a few lines. The user already knows the details.`;
+    }
+
     const response = await monitorAgent.generateLegacy(
       [
         {
           role: "user",
-          content: `URGENT: Some of my published apps need attention! Send me an email notification.
+          content: `Some of my published apps need attention. Send me an email notification.
+
+${toneGuidance}
 
 Here is the monitoring report:
 - Total apps checked: ${inputData.totalApps}
 - Apps that are DOWN: ${inputData.nonLiveApps.length}
 - Apps with ISSUES: ${inputData.issueApps.length}
 - Apps that are HEALTHY: ${inputData.liveApps.length}
-${downSection}${issueSection}${liveSection}
+${groupedNote}${downSection}${issueSection}${liveSection}
 
 Send an email with subject "${subject}" using the send-email-notification tool.
 Include a professional HTML email with:
@@ -522,6 +668,7 @@ Include a professional HTML email with:
 - Orange/yellow highlighting for issue apps. Clearly explain:
   - "Missing biotics" means healthy signals that SHOULD appear on the page but are ABSENT (like a vital sign going flat)
   - "Warning words" means bad signals that SHOULD NOT appear on the page but WERE FOUND
+  - "Content changed" means the page looks different from the last check — could be accidental deploy, hack, or wrong environment
 - Green for healthy apps
 Include the timestamp: ${inputData.reportTimestamp}`,
         },

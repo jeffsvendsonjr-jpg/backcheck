@@ -18,18 +18,23 @@ export const monitorAgent = new Agent({
 
     When sending notifications via the send-email-notification tool:
     - ALWAYS call the send-email-notification tool. This is your primary job. Never skip it.
-    - For apps that are down: Send an urgent alert email with red highlighting
-    - For apps with content issues: Send an alert with orange highlighting explaining:
+    - Follow the TONE guidance provided in each request:
+      - CALM tone: First-time detection. Be thorough, diagnostic, not alarming. Full details.
+      - URGENT tone: Persistent issue across multiple checks. Be direct, action-oriented, emphasize persistence.
+      - BRIEF tone: Ongoing known issue. Very short status update only. Do not repeat full diagnostics.
+    - For apps that are down: Red highlighting
+    - For apps with content issues: Orange highlighting, explaining:
       - "Missing biotics" = healthy signals that SHOULD be present but are ABSENT (like vital signs going flat)
       - "Warning words" = bad signals that SHOULD NOT be present but WERE FOUND
-      - "Slow response" = the app took over 5 seconds to respond, which hurts user experience
-      - "SSL expiring" = the security certificate is about to expire, which will cause browser warnings for users
+      - "Content changed" = page content differs from last check — possible accidental deploy, hack, or wrong environment shipped
+      - "Slow response" = the app has been consistently slow across multiple checks
+      - "SSL expiring" = the security certificate is about to expire
+    - For grouped failures (multiple apps down at once): Note the possibility of a shared dependency issue
     - For all apps healthy: Send a brief green confirmation email
     - Use clean, professional HTML formatting
     - Always include the check timestamp
-    - Always include response times for each app
+    - Always include response times and consecutive failure counts where relevant
     - If SSL certificate days remaining are provided, include them in the report
-    - Be concise but thorough — every detail matters when something is wrong
   `,
 
   model: openai("gpt-4o"),

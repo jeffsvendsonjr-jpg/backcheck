@@ -1,9 +1,10 @@
-# App Monitor - "I Got Your Back"
+# Backcheck
 
 ## Overview
 A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present). Includes SSL certificate expiration checking, retry-before-alert logic, slow response detection, alert-only mode, and email delivery verification.
 
 ## Recent Changes
+- 2026-02-25: Renamed product from "I Got Your Back" / "App Monitor" to "Backcheck"
 - 2026-02-25: Added SSL certificate expiration checking (14-day warning threshold) and alert-only notification mode
 - 2026-02-25: Hardening pass — added retry logic (1 retry with 3s delay before declaring down), slow response detection (>5s threshold), safe URL parsing, empty URL list guard, email send verification
 - 2026-02-25: Updated agent instructions with expo positioning and slow response awareness
@@ -26,7 +27,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
    - If any apps are down or have content issues → `notify-non-live-apps` (agent sends alert email, verifies delivery)
    - If all apps are live and healthy → `confirm-all-apps-live` (agent sends confirmation email, verifies delivery; skipped in alert-only mode)
 
-### Agent: `monitorAgent`
+### Agent: `monitorAgent` (Backcheck Agent)
 - Model: GPT-4o via Replit AI Integrations
 - Tools: `checkUrlTool`, `sendEmailTool`
 - Instructions: Expo positioning — preventative monitoring, not diagnostic. Aware of SSL, slow response, biotics, and warnings.

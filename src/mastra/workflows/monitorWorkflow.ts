@@ -151,7 +151,7 @@ const verifyAppLiveness = createStep({
         method: "GET",
         signal: controller.signal,
         redirect: "follow",
-        headers: { "User-Agent": "ReplitAppMonitor/1.0" },
+        headers: { "User-Agent": "Backcheck/1.0" },
       });
 
       clearTimeout(timeout);
@@ -383,7 +383,7 @@ const compileVerificationReport = createStep({
     const SLOW_THRESHOLD_MS = 5000;
 
     const summaryLines = [
-      `App Monitor Report - ${new Date().toISOString()}`,
+      `Backcheck Report - ${new Date().toISOString()}`,
       `Total: ${inputData.length} | Healthy: ${liveApps.length} | Down: ${nonLiveApps.length} | Issues: ${issueApps.length}`,
       "",
     ];

@@ -39,7 +39,7 @@ export const checkUrlTool = createTool({
         signal: controller.signal,
         redirect: "follow",
         headers: {
-          "User-Agent": "ReplitAppMonitor/1.0",
+          "User-Agent": "Backcheck/1.0",
         },
       });
 

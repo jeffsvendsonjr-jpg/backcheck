@@ -15,7 +15,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
 
 ### Trigger
 - **Type**: Time-based (cron)
-- **Schedule**: Every 6 hours (`0 */6 * * *`), configurable via `SCHEDULE_CRON_EXPRESSION` env var
+- **Schedule**: Every hour (`0 * * * *`), configurable via `SCHEDULE_CRON_EXPRESSION` env var
 - **Engine**: Inngest
 
 ### Workflow: `app-monitor-workflow`
@@ -42,7 +42,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
 
 ### Environment Variables
 - `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|signals`, `Name|URL`, or just `URL`. Signals use semicolons to separate multiple entries. Prefix with `+` for biotics (healthy signals that SHOULD be present) or `-` for warnings (bad signals that SHOULD NOT be present). Unprefixed words default to warnings. Example: `My App|https://myapp.replit.app|+welcome;+operational;-error;-maintenance`
-- `SCHEDULE_CRON_EXPRESSION` - Cron expression override (default: `0 */6 * * *`)
+- `SCHEDULE_CRON_EXPRESSION` - Cron expression override (default: `0 * * * *`)
 - `NOTIFY_MODE` - Set to `alert-only` to only receive emails when something is wrong. Default: `all` (sends both alerts and healthy confirmations)
 
 ### Monitoring Features

@@ -14,7 +14,7 @@ import { monitorAgent } from "./agents/monitorAgent";
 import { monitorWorkflow } from "./workflows/monitorWorkflow";
 
 registerCronTrigger({
-  cronExpression: process.env.SCHEDULE_CRON_EXPRESSION || "0 */6 * * *",
+  cronExpression: process.env.SCHEDULE_CRON_EXPRESSION || "0 * * * *",
   workflow: monitorWorkflow,
 });
 

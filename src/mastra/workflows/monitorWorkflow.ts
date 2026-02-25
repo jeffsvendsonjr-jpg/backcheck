@@ -48,41 +48,58 @@ const collectAppUrls = createStep({
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0);
 
-    const apps = entries.map((entry) => {
-      const parts = entry.split("|").map((s) => s.trim());
+    const apps: Array<{ name: string; url: string; biotics?: string[]; warnings?: string[] }> = [];
 
-      let name: string;
-      let url: string;
-      let biotics: string[] = [];
-      let warnings: string[] = [];
+    for (const entry of entries) {
+      try {
+        const parts = entry.split("|").map((s) => s.trim());
 
-      if (parts.length >= 3) {
-        name = parts[0];
-        url = parts[1];
-        const words = parts[2].split(";").map((w) => w.trim()).filter((w) => w.length > 0);
-        for (const word of words) {
-          if (word.startsWith("+")) {
-            biotics.push(word.slice(1));
-          } else if (word.startsWith("-")) {
-            warnings.push(word.slice(1));
-          } else {
-            warnings.push(word);
+        let name: string;
+        let url: string;
+        let biotics: string[] = [];
+        let warnings: string[] = [];
+
+        if (parts.length >= 3) {
+          name = parts[0];
+          url = parts[1];
+          const words = parts[2].split(";").map((w) => w.trim()).filter((w) => w.length > 0);
+          for (const word of words) {
+            if (word.startsWith("+")) {
+              biotics.push(word.slice(1));
+            } else if (word.startsWith("-")) {
+              warnings.push(word.slice(1));
+            } else {
+              warnings.push(word);
+            }
+          }
+        } else if (parts.length === 2) {
+          name = parts[0];
+          url = parts[1];
+        } else {
+          url = entry;
+          try {
+            const urlObj = new URL(entry);
+            name = urlObj.hostname.replace(".replit.app", "").replace(/[.-]/g, " ");
+          } catch {
+            logger?.error(`❌ [collectAppUrls] Skipping malformed URL entry: "${entry}"`);
+            continue;
           }
         }
-      } else if (parts.length === 2) {
-        name = parts[0];
-        url = parts[1];
-      } else {
-        url = entry;
-        const urlObj = new URL(entry);
-        name = urlObj.hostname.replace(".replit.app", "").replace(/[.-]/g, " ");
-      }
 
-      const result: any = { name, url };
-      if (biotics.length > 0) result.biotics = biotics;
-      if (warnings.length > 0) result.warnings = warnings;
-      return result;
-    });
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+          logger?.error(`❌ [collectAppUrls] Skipping entry with invalid URL (must start with http:// or https://): "${url}"`);
+          continue;
+        }
+
+        const result: { name: string; url: string; biotics?: string[]; warnings?: string[] } = { name, url };
+        if (biotics.length > 0) result.biotics = biotics;
+        if (warnings.length > 0) result.warnings = warnings;
+        apps.push(result);
+      } catch (e) {
+        logger?.error(`❌ [collectAppUrls] Skipping unparseable entry: "${entry}" - ${e instanceof Error ? e.message : String(e)}`);
+        continue;
+      }
+    }
 
     logger?.info(`✅ [collectAppUrls] Found ${apps.length} app(s) to monitor:`, {
       apps: apps.map((a: any) => {
@@ -115,12 +132,13 @@ const verifyAppLiveness = createStep({
     const bioticsList = inputData.biotics || [];
     const warningsList = inputData.warnings || [];
     const hasScanWords = bioticsList.length > 0 || warningsList.length > 0;
+    const SLOW_THRESHOLD_MS = 5000;
+    const MAX_RETRIES = 1;
 
     logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${bioticsList.length ? ` | biotics (+): ${bioticsList.map((w) => `"${w}"`).join(", ")}` : ""}${warningsList.length ? ` | warnings (-): ${warningsList.map((w) => `"${w}"`).join(", ")}` : ""}`);
 
-    const startTime = Date.now();
-
-    try {
+    async function attemptFetch(): Promise<{ resp: Response; responseTimeMs: number }> {
+      const startTime = Date.now();
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
 
@@ -132,85 +150,135 @@ const verifyAppLiveness = createStep({
       });
 
       clearTimeout(timeout);
-      const responseTimeMs = Date.now() - startTime;
-      const isLive = resp.status >= 200 && resp.status < 400;
-
-      const bioticsMissing: string[] = [];
-      const warningsFound: string[] = [];
-
-      if (hasScanWords && isLive) {
-        try {
-          const body = await resp.text();
-          const bodyLower = body.toLowerCase();
-
-          for (const word of bioticsList) {
-            if (!bodyLower.includes(word.toLowerCase())) {
-              bioticsMissing.push(word);
-              logger?.warn(
-                `🦠 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" MISSING from response body!`
-              );
-            } else {
-              logger?.info(
-                `🌿 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" confirmed present`
-              );
-            }
-          }
-
-          for (const word of warningsList) {
-            if (bodyLower.includes(word.toLowerCase())) {
-              warningsFound.push(word);
-              logger?.warn(
-                `⚠️ [verifyAppLiveness] ${inputData.name}: Warning word "${word}" FOUND in response body!`
-              );
-            }
-          }
-        } catch (e) {
-          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for content scan`);
-        }
-      }
-
-      const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0;
-
-      const icon = !isLive ? "❌" : hasIssues ? "⚠️" : "✅";
-      let statusMsg = `${icon} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms`;
-      if (bioticsMissing.length > 0) statusMsg += `, missing biotics: ${bioticsMissing.map((w) => `"${w}"`).join(", ")}`;
-      if (warningsFound.length > 0) statusMsg += `, warnings found: ${warningsFound.map((w) => `"${w}"`).join(", ")}`;
-      logger?.info(statusMsg);
-
-      return {
-        url: inputData.url,
-        name: inputData.name,
-        isLive: isLive && !hasIssues,
-        statusCode: resp.status,
-        responseTimeMs,
-        checkedAt: new Date().toISOString(),
-        biotics: bioticsList,
-        bioticsMissing,
-        warnings: warningsList,
-        warningsFound,
-        hasIssues,
-      };
-    } catch (error) {
-      const responseTimeMs = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
-      logger?.error(`❌ [verifyAppLiveness] ${inputData.name}: Failed - ${errorMessage}`);
-
-      return {
-        url: inputData.url,
-        name: inputData.name,
-        isLive: false,
-        statusCode: 0,
-        responseTimeMs,
-        error: errorMessage,
-        checkedAt: new Date().toISOString(),
-        biotics: bioticsList,
-        bioticsMissing: [],
-        warnings: warningsList,
-        warningsFound: [],
-        hasIssues: false,
-      };
+      return { resp, responseTimeMs: Date.now() - startTime };
     }
+
+    let lastError: string | undefined;
+    let lastResponseTimeMs = 0;
+    const overallStartTime = Date.now();
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const attemptStartTime = Date.now();
+      try {
+        if (attempt > 0) {
+          logger?.info(`🔄 [verifyAppLiveness] ${inputData.name}: Retry attempt ${attempt}/${MAX_RETRIES} after initial failure...`);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+
+        const { resp, responseTimeMs } = await attemptFetch();
+        lastResponseTimeMs = responseTimeMs;
+        const isLive = resp.status >= 200 && resp.status < 400;
+
+        if (!isLive && attempt < MAX_RETRIES) {
+          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Got status ${resp.status}, will retry to confirm...`);
+          lastError = `HTTP ${resp.status}`;
+          continue;
+        }
+
+        const bioticsMissing: string[] = [];
+        const warningsFound: string[] = [];
+        const isSlow = responseTimeMs > SLOW_THRESHOLD_MS;
+
+        if (hasScanWords && isLive) {
+          try {
+            const body = await resp.text();
+            const bodyLower = body.toLowerCase();
+
+            for (const word of bioticsList) {
+              if (!bodyLower.includes(word.toLowerCase())) {
+                bioticsMissing.push(word);
+                logger?.warn(
+                  `🦠 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" MISSING from response body!`
+                );
+              } else {
+                logger?.info(
+                  `🌿 [verifyAppLiveness] ${inputData.name}: Biotic "${word}" confirmed present`
+                );
+              }
+            }
+
+            for (const word of warningsList) {
+              if (bodyLower.includes(word.toLowerCase())) {
+                warningsFound.push(word);
+                logger?.warn(
+                  `⚠️ [verifyAppLiveness] ${inputData.name}: Warning word "${word}" FOUND in response body!`
+                );
+              }
+            }
+          } catch (e) {
+            logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for content scan`);
+          }
+        }
+
+        const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0 || isSlow;
+
+        if (isSlow) {
+          logger?.warn(`🐢 [verifyAppLiveness] ${inputData.name}: Response time ${responseTimeMs}ms exceeds ${SLOW_THRESHOLD_MS}ms threshold`);
+        }
+
+        const icon = !isLive ? "❌" : hasIssues ? "⚠️" : "✅";
+        let statusMsg = `${icon} [verifyAppLiveness] ${inputData.name}: status=${resp.status}, time=${responseTimeMs}ms`;
+        if (bioticsMissing.length > 0) statusMsg += `, missing biotics: ${bioticsMissing.map((w) => `"${w}"`).join(", ")}`;
+        if (warningsFound.length > 0) statusMsg += `, warnings found: ${warningsFound.map((w) => `"${w}"`).join(", ")}`;
+        if (isSlow) statusMsg += `, SLOW RESPONSE`;
+        if (attempt > 0) statusMsg += ` (confirmed after retry)`;
+        logger?.info(statusMsg);
+
+        return {
+          url: inputData.url,
+          name: inputData.name,
+          isLive: isLive && !hasIssues,
+          statusCode: resp.status,
+          responseTimeMs,
+          checkedAt: new Date().toISOString(),
+          biotics: bioticsList,
+          bioticsMissing,
+          warnings: warningsList,
+          warningsFound,
+          hasIssues,
+        };
+      } catch (error) {
+        lastResponseTimeMs = Date.now() - attemptStartTime;
+        lastError = error instanceof Error ? error.message : String(error);
+
+        if (attempt < MAX_RETRIES) {
+          logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Request failed (${lastError}), will retry to confirm...`);
+          continue;
+        }
+
+        logger?.error(`❌ [verifyAppLiveness] ${inputData.name}: Failed after ${attempt + 1} attempt(s) - ${lastError}`);
+
+        return {
+          url: inputData.url,
+          name: inputData.name,
+          isLive: false,
+          statusCode: 0,
+          responseTimeMs: lastResponseTimeMs,
+          error: lastError,
+          checkedAt: new Date().toISOString(),
+          biotics: bioticsList,
+          bioticsMissing: [],
+          warnings: warningsList,
+          warningsFound: [],
+          hasIssues: false,
+        };
+      }
+    }
+
+    return {
+      url: inputData.url,
+      name: inputData.name,
+      isLive: false,
+      statusCode: 0,
+      responseTimeMs: Date.now() - overallStartTime,
+      error: lastError || "Unknown failure after retries",
+      checkedAt: new Date().toISOString(),
+      biotics: bioticsList,
+      bioticsMissing: [],
+      warnings: warningsList,
+      warningsFound: [],
+      hasIssues: false,
+    };
   },
 });
 
@@ -234,9 +302,24 @@ const compileVerificationReport = createStep({
     const logger = mastra?.getLogger();
     logger?.info(`📊 [compileReport] Compiling report for ${inputData.length} app(s)...`);
 
+    if (inputData.length === 0) {
+      logger?.warn("⚠️ [compileReport] No apps were checked! APP_URLS may be empty or misconfigured.");
+      return {
+        totalApps: 0,
+        liveApps: [],
+        nonLiveApps: [],
+        issueApps: [],
+        hasProblems: true,
+        reportTimestamp: new Date().toISOString(),
+        summaryText: "WARNING: No apps were checked. Please verify your APP_URLS configuration.",
+      };
+    }
+
     const issueApps = inputData.filter((app) => app.hasIssues === true);
     const nonLiveApps = inputData.filter((app) => !app.isLive && !app.hasIssues);
     const liveApps = inputData.filter((app) => app.isLive && !app.hasIssues);
+
+    const SLOW_THRESHOLD_MS = 5000;
 
     const summaryLines = [
       `App Monitor Report - ${new Date().toISOString()}`,
@@ -261,6 +344,9 @@ const compileVerificationReport = createStep({
         }
         if ((app.warningsFound?.length ?? 0) > 0) {
           parts.push(`warning words found: ${app.warningsFound!.map((w) => `"${w}"`).join(", ")}`);
+        }
+        if (app.responseTimeMs > SLOW_THRESHOLD_MS) {
+          parts.push(`slow response: ${app.responseTimeMs}ms`);
         }
         summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, ${parts.join(" | ")}`);
       });
@@ -328,6 +414,9 @@ const notifyNonLiveApps = createStep({
       if ((app.warningsFound?.length ?? 0) > 0) {
         detail += `\n  Warning words detected: ${app.warningsFound!.map((w) => `"${w}"`).join(", ")} — these words SHOULD NOT be on the page but ARE`;
       }
+      if (app.responseTimeMs > 5000) {
+        detail += `\n  Slow response: ${app.responseTimeMs}ms (threshold: 5000ms) — the app is responding too slowly for a good user experience`;
+      }
       issueLines.push(detail);
     }
     const issueSection = issueLines.length > 0
@@ -369,7 +458,18 @@ Include the timestamp: ${inputData.reportTimestamp}`,
       { maxSteps: 3 }
     );
 
-    logger?.info(`✅ [notifyNonLive] Alert notification sent`);
+    const toolResults = response.steps?.flatMap((s: any) => s.toolResults || []) || [];
+    const emailSent = toolResults.some((r: any) => r?.result?.success === true || r?.success === true);
+
+    if (!emailSent) {
+      logger?.error("❌ [notifyNonLive] Agent did not successfully send the alert email! Tool results:", { toolResults });
+      return {
+        notified: false,
+        message: `FAILED to send alert email for ${inputData.nonLiveApps.length} down, ${inputData.issueApps.length} issue(s). Email tool was not invoked or failed.`,
+      };
+    }
+
+    logger?.info(`✅ [notifyNonLive] Alert notification confirmed sent`);
 
     return {
       notified: true,
@@ -414,7 +514,18 @@ Include the timestamp: ${inputData.reportTimestamp}`,
       { maxSteps: 3 }
     );
 
-    logger?.info(`✅ [confirmAllLive] Confirmation notification sent`);
+    const toolResults = response.steps?.flatMap((s: any) => s.toolResults || []) || [];
+    const emailSent = toolResults.some((r: any) => r?.result?.success === true || r?.success === true);
+
+    if (!emailSent) {
+      logger?.error("❌ [confirmAllLive] Agent did not successfully send the confirmation email! Tool results:", { toolResults });
+      return {
+        notified: false,
+        message: `FAILED to send confirmation email. Email tool was not invoked or failed.`,
+      };
+    }
+
+    logger?.info(`✅ [confirmAllLive] Confirmation notification confirmed sent`);
 
     return {
       notified: true,

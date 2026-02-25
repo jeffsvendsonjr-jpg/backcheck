@@ -1,0 +1,91 @@
+ADJUST (small changes, big leverage)
+	1.	Content check timing
+	•	Ensure biotics/warnings are evaluated after JS has rendered (not just raw HTML).
+	•	This prevents false “healthy” states on broken SPA loads.
+	2.	Response-time logic
+	•	Keep the 5s threshold, but trigger alerts on 2–3 consecutive slow checks, not a single spike.
+	•	Reduces noise and adds predictive value.
+	3.	String matching tolerance
+	•	Allow:
+	•	case-insensitive match
+	•	optional regex
+	•	OR-groups for biotics (“any of these is acceptable”)
+	•	Prevents alerts caused by harmless copy edits.
+	4.	Alert tone escalation
+	•	First failure = calm diagnostic
+	•	Repeated failure = urgent + concise
+	•	Ongoing failure = short status update, not repeated essays
+	•	This lowers alert fatigue and support questions.
+
+⸻
+
+ADD (only what increases perceived value)
+	1.	Rendered-page change detection
+	•	Alert when visible page content changes significantly between checks.
+	•	Catches:
+	•	accidental deploys
+	•	hacked pages
+	•	wrong environment shipped
+	•	One signal, high trust, zero config.
+	2.	Grouped failure detection
+	•	If multiple apps fail in the same cycle:
+	•	send one alert
+	•	state “likely shared dependency”
+	•	Saves panic and makes you look smart.
+	3.	Acknowledged-issue window
+	•	Temporarily suppress repeat alerts for a known issue (time-boxed).
+	•	Still monitors, just stops spamming.
+	•	This is essential for paid users.
+	4.	Secondary email fallback
+	•	Optional second address if primary fails or bounces.
+	•	Keeps email-only philosophy intact while closing the last reliability gap.
+
+⸻
+
+DO NOT ADD / REMOVE (protect the product)
+	1.	No dashboards
+	•	Even optional ones train users to check instead of trust.
+	•	Trust is your moat.
+	2.	No per-minute check knobs
+	•	Hourly is sane.
+	•	Faster only during incidents, automatically.
+	3.	No Slack / Discord / webhook sprawl (for now)
+	•	Email is universal and frictionless.
+	•	Every extra channel multiplies support complexity.
+	4.	No internal metrics, traces, or logs
+	•	That’s Datadog’s job.
+	•	Your value is external truth, not internal introspection.
+
+⸻
+
+PRICING REALITY CHECK (this matters)
+
+Based on current + adjusted scope, this is not a $5 toy and not an enterprise tool.
+
+You’re selling:
+	•	peace of mind
+	•	reputational protection
+	•	zero attention tax
+
+Anchor pricing logic (monthly):
+	•	Per app, not per check
+	•	Flat intelligence, not usage games
+
+Strong initial range:
+	•	$7–$12 / app / month
+	•	Simple tiers:
+	•	Free: 1 app, core checks, limited alerts
+	•	Paid: multiple apps + change detection + acknowledgments
+
+If someone hesitates at $9:
+	•	they’re not your customer
+	•	they’re okay finding out from users when things break
+
+That’s fine.
+
+⸻
+
+Final verdict
+
+You’re already at publish-worthy.
+The items above turn it into pay-worthy without bloating or betraying the philosophy.

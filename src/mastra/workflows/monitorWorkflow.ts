@@ -1,5 +1,6 @@
 import { createStep, createWorkflow } from "../inngest";
 import { z } from "zod";
+import * as tls from "node:tls";
 import { monitorAgent } from "../agents/monitorAgent";
 
 const appResultSchema = z.object({
@@ -15,6 +16,8 @@ const appResultSchema = z.object({
   warnings: z.array(z.string()).optional(),
   warningsFound: z.array(z.string()).optional(),
   hasIssues: z.boolean().optional(),
+  sslDaysRemaining: z.number().optional(),
+  sslExpiring: z.boolean().optional(),
 });
 
 const collectAppUrls = createStep({
@@ -137,6 +140,8 @@ const verifyAppLiveness = createStep({
 
     logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${bioticsList.length ? ` | biotics (+): ${bioticsList.map((w) => `"${w}"`).join(", ")}` : ""}${warningsList.length ? ` | warnings (-): ${warningsList.map((w) => `"${w}"`).join(", ")}` : ""}`);
 
+    const SSL_EXPIRY_WARNING_DAYS = 14;
+
     async function attemptFetch(): Promise<{ resp: Response; responseTimeMs: number }> {
       const startTime = Date.now();
       const controller = new AbortController();
@@ -151,6 +156,45 @@ const verifyAppLiveness = createStep({
 
       clearTimeout(timeout);
       return { resp, responseTimeMs: Date.now() - startTime };
+    }
+
+    async function checkSslCert(urlStr: string): Promise<{ daysRemaining: number; expiring: boolean } | null> {
+      try {
+        const parsed = new URL(urlStr);
+        if (parsed.protocol !== "https:") return null;
+
+        const hostname = parsed.hostname;
+        const port = parseInt(parsed.port) || 443;
+
+        return await new Promise((resolve) => {
+          const socket = tls.connect({ host: hostname, port, servername: hostname, timeout: 5000 }, () => {
+            const cert = socket.getPeerCertificate();
+            socket.destroy();
+
+            if (!cert || !cert.valid_to) {
+              resolve(null);
+              return;
+            }
+
+            const expiryDate = new Date(cert.valid_to);
+            const now = new Date();
+            const daysRemaining = Math.floor((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+            resolve({ daysRemaining, expiring: daysRemaining <= SSL_EXPIRY_WARNING_DAYS });
+          });
+
+          socket.on("error", () => {
+            socket.destroy();
+            resolve(null);
+          });
+
+          socket.on("timeout", () => {
+            socket.destroy();
+            resolve(null);
+          });
+        });
+      } catch {
+        return null;
+      }
     }
 
     let lastError: string | undefined;
@@ -210,7 +254,21 @@ const verifyAppLiveness = createStep({
           }
         }
 
-        const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0 || isSlow;
+        let sslDaysRemaining: number | undefined;
+        let sslExpiring = false;
+
+        const sslResult = await checkSslCert(inputData.url);
+        if (sslResult) {
+          sslDaysRemaining = sslResult.daysRemaining;
+          sslExpiring = sslResult.expiring;
+          if (sslExpiring) {
+            logger?.warn(`🔐 [verifyAppLiveness] ${inputData.name}: SSL certificate expires in ${sslDaysRemaining} day(s)!`);
+          } else {
+            logger?.info(`🔒 [verifyAppLiveness] ${inputData.name}: SSL certificate valid for ${sslDaysRemaining} day(s)`);
+          }
+        }
+
+        const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0 || isSlow || sslExpiring;
 
         if (isSlow) {
           logger?.warn(`🐢 [verifyAppLiveness] ${inputData.name}: Response time ${responseTimeMs}ms exceeds ${SLOW_THRESHOLD_MS}ms threshold`);
@@ -221,6 +279,7 @@ const verifyAppLiveness = createStep({
         if (bioticsMissing.length > 0) statusMsg += `, missing biotics: ${bioticsMissing.map((w) => `"${w}"`).join(", ")}`;
         if (warningsFound.length > 0) statusMsg += `, warnings found: ${warningsFound.map((w) => `"${w}"`).join(", ")}`;
         if (isSlow) statusMsg += `, SLOW RESPONSE`;
+        if (sslExpiring) statusMsg += `, SSL EXPIRING (${sslDaysRemaining}d)`;
         if (attempt > 0) statusMsg += ` (confirmed after retry)`;
         logger?.info(statusMsg);
 
@@ -236,6 +295,8 @@ const verifyAppLiveness = createStep({
           warnings: warningsList,
           warningsFound,
           hasIssues,
+          sslDaysRemaining,
+          sslExpiring,
         };
       } catch (error) {
         lastResponseTimeMs = Date.now() - attemptStartTime;
@@ -348,6 +409,9 @@ const compileVerificationReport = createStep({
         if (app.responseTimeMs > SLOW_THRESHOLD_MS) {
           parts.push(`slow response: ${app.responseTimeMs}ms`);
         }
+        if (app.sslExpiring) {
+          parts.push(`SSL cert expires in ${app.sslDaysRemaining} day(s)`);
+        }
         summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, ${parts.join(" | ")}`);
       });
       summaryLines.push("");
@@ -356,7 +420,11 @@ const compileVerificationReport = createStep({
     if (liveApps.length > 0) {
       summaryLines.push("HEALTHY APPS:");
       liveApps.forEach((app) => {
-        summaryLines.push(`  - ${app.name} (${app.url}): status=${app.statusCode}, ${app.responseTimeMs}ms`);
+        let line = `  - ${app.name} (${app.url}): status=${app.statusCode}, ${app.responseTimeMs}ms`;
+        if (app.sslDaysRemaining !== undefined) {
+          line += `, SSL: ${app.sslDaysRemaining}d`;
+        }
+        summaryLines.push(line);
       });
     }
 
@@ -416,6 +484,9 @@ const notifyNonLiveApps = createStep({
       }
       if (app.responseTimeMs > 5000) {
         detail += `\n  Slow response: ${app.responseTimeMs}ms (threshold: 5000ms) — the app is responding too slowly for a good user experience`;
+      }
+      if (app.sslExpiring) {
+        detail += `\n  SSL certificate expiring in ${app.sslDaysRemaining} day(s) — users will see browser security warnings when it expires`;
       }
       issueLines.push(detail);
     }
@@ -491,6 +562,16 @@ const confirmAllAppsLive = createStep({
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
+    const notifyMode = (process.env.NOTIFY_MODE || "all").toLowerCase().trim();
+
+    if (notifyMode === "alert-only") {
+      logger?.info(`✅ [confirmAllLive] All ${inputData.totalApps} app(s) are live. NOTIFY_MODE=alert-only, skipping confirmation email.`);
+      return {
+        notified: false,
+        message: `All ${inputData.totalApps} apps healthy. No email sent (alert-only mode).`,
+      };
+    }
+
     logger?.info(`✅ [confirmAllLive] All ${inputData.totalApps} app(s) are live! Sending confirmation...`);
 
     const response = await monitorAgent.generateLegacy(

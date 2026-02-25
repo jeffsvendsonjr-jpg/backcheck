@@ -1,9 +1,10 @@
 # App Monitor - "I Got Your Back"
 
 ## Overview
-A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present). Includes retry-before-alert logic to prevent false alarms, slow response detection, and email delivery verification.
+A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present). Includes SSL certificate expiration checking, retry-before-alert logic, slow response detection, alert-only mode, and email delivery verification.
 
 ## Recent Changes
+- 2026-02-25: Added SSL certificate expiration checking (14-day warning threshold) and alert-only notification mode
 - 2026-02-25: Hardening pass — added retry logic (1 retry with 3s delay before declaring down), slow response detection (>5s threshold), safe URL parsing, empty URL list guard, email send verification
 - 2026-02-25: Updated agent instructions with expo positioning and slow response awareness
 - 2026-02-11: Added dual content scanning — biotics (+) for healthy signals that must be present, warnings (-) for bad signals that must be absent
@@ -19,20 +20,20 @@ A time-based automation that monitors published Replit apps for liveness. It per
 
 ### Workflow: `app-monitor-workflow`
 1. **collect-app-pay-urls** - Reads `APP_URLS` env var (comma-separated, format: `Name|URL|+biotic;-warning`). Gracefully skips malformed entries.
-2. **verify-app-liveness** (forEach, concurrency: 5) - HTTP GET check for each URL + optional content scan for biotics and warnings. Retries once with 3s delay before declaring down. Flags responses >5000ms as slow.
-3. **compile-verification-report** - Aggregates results into healthy/down/issue lists. Returns hasProblems=true if 0 apps were checked.
+2. **verify-app-liveness** (forEach, concurrency: 5) - HTTP GET check for each URL + optional content scan for biotics and warnings. Retries once with 3s delay before declaring down. Flags responses >5000ms as slow. Checks SSL certificate expiration (warns at 14 days).
+3. **compile-verification-report** - Aggregates results into healthy/down/issue lists. Returns hasProblems=true if 0 apps were checked. Includes SSL days remaining in report.
 4. **Branch**:
    - If any apps are down or have content issues → `notify-non-live-apps` (agent sends alert email, verifies delivery)
-   - If all apps are live and healthy → `confirm-all-apps-live` (agent sends confirmation email, verifies delivery)
+   - If all apps are live and healthy → `confirm-all-apps-live` (agent sends confirmation email, verifies delivery; skipped in alert-only mode)
 
 ### Agent: `monitorAgent`
 - Model: GPT-4o via Replit AI Integrations
 - Tools: `checkUrlTool`, `sendEmailTool`
-- Instructions: Expo positioning — preventative monitoring, not diagnostic
+- Instructions: Expo positioning — preventative monitoring, not diagnostic. Aware of SSL, slow response, biotics, and warnings.
 - Used in notification steps to craft professional email content
 
 ### Key Files
-- `src/mastra/workflows/monitorWorkflow.ts` - Main workflow with retry logic, slow detection, email verification
+- `src/mastra/workflows/monitorWorkflow.ts` - Main workflow with retry logic, SSL checking, slow detection, alert-only mode, email verification
 - `src/mastra/agents/monitorAgent.ts` - Agent definition
 - `src/mastra/tools/checkUrlTool.ts` - URL liveness checker (standalone tool for agent use)
 - `src/mastra/tools/sendEmailTool.ts` - Email sender via Replit Mail
@@ -42,10 +43,14 @@ A time-based automation that monitors published Replit apps for liveness. It per
 ### Environment Variables
 - `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|signals`, `Name|URL`, or just `URL`. Signals use semicolons to separate multiple entries. Prefix with `+` for biotics (healthy signals that SHOULD be present) or `-` for warnings (bad signals that SHOULD NOT be present). Unprefixed words default to warnings. Example: `My App|https://myapp.replit.app|+welcome;+operational;-error;-maintenance`
 - `SCHEDULE_CRON_EXPRESSION` - Cron expression override (default: `0 */6 * * *`)
+- `NOTIFY_MODE` - Set to `alert-only` to only receive emails when something is wrong. Default: `all` (sends both alerts and healthy confirmations)
 
-### Hardening Features
+### Monitoring Features
+- **SSL certificate checking**: Checks HTTPS certificate expiration via TLS handshake. Warns when cert expires within 14 days. Reports days remaining for all apps.
 - **Retry before alert**: Failed checks are retried once after 3 seconds to prevent false alarms from transient network issues
 - **Slow response detection**: Responses taking >5000ms are flagged as issues
+- **Dual content scanning**: Biotics (+) for required healthy signals, Warnings (-) for prohibited bad signals
+- **Alert-only mode**: Set `NOTIFY_MODE=alert-only` to skip "all healthy" confirmation emails
 - **Safe URL parsing**: Malformed entries are logged and skipped instead of crashing
 - **Empty list guard**: Reports hasProblems=true when 0 apps are checked (prevents false "all healthy" emails)
 - **Email delivery verification**: After agent sends email, tool results are inspected to confirm delivery succeeded

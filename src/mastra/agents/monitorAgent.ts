@@ -23,10 +23,12 @@ export const monitorAgent = new Agent({
       - "Missing biotics" = healthy signals that SHOULD be present but are ABSENT (like vital signs going flat)
       - "Warning words" = bad signals that SHOULD NOT be present but WERE FOUND
       - "Slow response" = the app took over 5 seconds to respond, which hurts user experience
+      - "SSL expiring" = the security certificate is about to expire, which will cause browser warnings for users
     - For all apps healthy: Send a brief green confirmation email
     - Use clean, professional HTML formatting
     - Always include the check timestamp
     - Always include response times for each app
+    - If SSL certificate days remaining are provided, include them in the report
     - Be concise but thorough — every detail matters when something is wrong
   `,
 

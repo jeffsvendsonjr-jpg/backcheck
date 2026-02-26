@@ -82,6 +82,14 @@ export const mastra = new Mastra({
     port: 5000,
     middleware: [
       async (c, next) => {
+        const url = new URL(c.req.url);
+        if (url.pathname === "/" || url.pathname === "/index.html") {
+          const { getHomepageHtml } = await import("../homepage");
+          return c.html(getHomepageHtml());
+        }
+        await next();
+      },
+      async (c, next) => {
         const mastra = c.get("mastra");
         const logger = mastra?.getLogger();
         logger?.debug("[Request]", { method: c.req.method, url: c.req.url });

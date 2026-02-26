@@ -25,6 +25,26 @@ const appResultSchema = z.object({
   consecutiveSlow: z.number().optional(),
 });
 
+function normalizeContentForHashing(html: string): string {
+  let normalized = html;
+  normalized = normalized.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  normalized = normalized.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+  normalized = normalized.replace(/<!--[\s\S]*?-->/g, "");
+  normalized = normalized.replace(/\b(csrf|nonce|token|_token|authenticity_token)\s*[:=]\s*["'][^"']*["']/gi, "");
+  normalized = normalized.replace(/\b(csrf|nonce|token)["']?\s*:\s*["'][^"']*["']/gi, "");
+  normalized = normalized.replace(/<(input|meta)[^>]*(csrf|nonce|token|_token)[^>]*>/gi, "");
+  normalized = normalized.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s"'<]*/g, "");
+  normalized = normalized.replace(/\b\d{10,13}\b/g, "");
+  normalized = normalized.replace(/[a-f0-9]{32,64}/gi, (match) => {
+    if (/^[a-f0-9]+$/i.test(match) && match.length >= 32) return "";
+    return match;
+  });
+  normalized = normalized.replace(/data-[\w-]+=["'][^"']*["']/gi, "");
+  normalized = normalized.replace(/\s+/g, " ");
+  normalized = normalized.trim();
+  return normalized;
+}
+
 const collectAppUrls = createStep({
   id: "collect-app-pay-urls",
   description: "Collects all published app URLs from the APP_URLS environment variable",
@@ -146,7 +166,7 @@ const verifyAppLiveness = createStep({
 
     logger?.info(`🔍 [verifyAppLiveness] Checking: ${inputData.name} (${inputData.url})${bioticsList.length ? ` | biotics (+): ${bioticsList.map((w) => `"${w}"`).join(", ")}` : ""}${warningsList.length ? ` | warnings (-): ${warningsList.map((w) => `"${w}"`).join(", ")}` : ""}`);
 
-    const SSL_EXPIRY_WARNING_DAYS = 14;
+    const SSL_EXPIRY_WARNING_DAYS = parseInt(process.env.SSL_WARN_DAYS || "14", 10) || 14;
 
     let previousState = null as Awaited<ReturnType<typeof getAppState>>;
     try {
@@ -248,7 +268,8 @@ const verifyAppLiveness = createStep({
             bodyText = await resp.text();
             const bodyLower = bodyText.toLowerCase();
 
-            contentHash = crypto.createHash("md5").update(bodyText).digest("hex");
+            const normalizedBody = normalizeContentForHashing(bodyText);
+            contentHash = crypto.createHash("md5").update(normalizedBody).digest("hex");
 
             if (previousState?.content_hash && previousState.content_hash !== contentHash) {
               contentChanged = true;
@@ -616,10 +637,12 @@ Write a very short, confident HTML email. The tone is calm and reassuring. Forma
 - One sentence: "Backcheck ran ${pulseState.total_checks} checks over the past ${daysCovered} days."
 - One sentence about issues: either "No issues were detected." or "X issues and Y downtime incidents were detected and reported."
 - Sign off with: "Silence is healthy. —Backcheck"
-Keep it under 5 sentences total. No tables, no charts. Just a clean pulse.`,
+Keep it under 5 sentences total. No tables, no charts. Just a clean pulse.
+
+Also send a webhook notification using the send-webhook-notification tool with isAlert=false and the same brief pulse summary as plain text.`,
         },
       ],
-      { maxSteps: 3 }
+      { maxSteps: 5 }
     );
 
     const pulseToolResults = pulseResponse.steps?.flatMap((s: any) => s.toolResults || []) || [];
@@ -737,10 +760,12 @@ Include a professional HTML email with:
   - "Warning words" means bad signals that SHOULD NOT appear on the page but WERE FOUND
   - "Content changed" means the page looks different from the last check — could be accidental deploy, hack, or wrong environment
 - Green for healthy apps
-Include the timestamp: ${inputData.reportTimestamp}`,
+Include the timestamp: ${inputData.reportTimestamp}
+
+Also send a webhook notification using the send-webhook-notification tool with isAlert=true and a plain text summary of the issues.`,
         },
       ],
-      { maxSteps: 3 }
+      { maxSteps: 5 }
     );
 
     const toolResults = response.steps?.flatMap((s: any) => s.toolResults || []) || [];
@@ -812,10 +837,12 @@ ${inputData.liveApps.map((app) => `- ${app.name} (${app.url}): HTTP ${app.status
 
 Send an email with subject "All ${inputData.totalApps} App(s) Healthy" using the send-email-notification tool.
 Include a brief, professional HTML email with green highlights confirming everything is healthy.
-Include the timestamp: ${inputData.reportTimestamp}`,
+Include the timestamp: ${inputData.reportTimestamp}
+
+Also send a webhook notification using the send-webhook-notification tool with isAlert=false and a brief plain text confirmation.`,
         },
       ],
-      { maxSteps: 3 }
+      { maxSteps: 5 }
     );
 
     const toolResults = response.steps?.flatMap((s: any) => s.toolResults || []) || [];

@@ -2,6 +2,7 @@ import { Agent } from "@mastra/core/agent";
 import { createOpenAI } from "@ai-sdk/openai";
 import { checkUrlTool } from "../tools/checkUrlTool";
 import { sendEmailTool } from "../tools/sendEmailTool";
+import { sendWebhookTool } from "../tools/sendWebhookTool";
 
 const openai = createOpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
@@ -36,6 +37,12 @@ export const monitorAgent = new Agent({
     - Always include the check timestamp
     - Always include response times and consecutive failure counts where relevant
     - If SSL certificate days remaining are provided, include them in the report
+
+    Webhook notifications:
+    - If a WEBHOOK_URL is configured, ALSO call the send-webhook-notification tool in addition to the email tool
+    - For webhooks, use plain text (not HTML) in the body
+    - Send both email and webhook — they are complementary, not alternatives
+    - If webhook fails, still consider the notification successful as long as email succeeded
   `,
 
   model: openai("gpt-4o"),
@@ -43,5 +50,6 @@ export const monitorAgent = new Agent({
   tools: {
     checkUrlTool,
     sendEmailTool,
+    sendWebhookTool,
   },
 });

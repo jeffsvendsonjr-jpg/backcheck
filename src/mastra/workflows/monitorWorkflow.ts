@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as tls from "node:tls";
 import * as crypto from "node:crypto";
 import { monitorAgent } from "../agents/monitorAgent";
-import { getAppState, updateAppState } from "../../utils/appState";
+import { getAppState, updateAppState, incrementPulseCounters, isPulseDue, getPulseState, resetPulseCounters } from "../../utils/appState";
 
 const appResultSchema = z.object({
   url: z.string(),
@@ -546,6 +546,23 @@ const compileVerificationReport = createStep({
 
     logger?.info(`📊 [compileReport] Report compiled (tone: ${alertTone}):`, { summaryText });
 
+    try {
+      await incrementPulseCounters(inputData.length, issueApps.length, nonLiveApps.length);
+      logger?.info(`📈 [compileReport] Pulse counters updated: +${inputData.length} checks, +${issueApps.length} issues, +${nonLiveApps.length} down`);
+    } catch (e) {
+      logger?.warn(`⚠️ [compileReport] Could not update pulse counters: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    let pulseDue = false;
+    try {
+      pulseDue = await isPulseDue();
+      if (pulseDue) {
+        logger?.info(`📬 [compileReport] Weekly pulse email is due!`);
+      }
+    } catch (e) {
+      logger?.warn(`⚠️ [compileReport] Could not check pulse status: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
     return {
       totalApps: inputData.length,
       liveApps,
@@ -556,6 +573,7 @@ const compileVerificationReport = createStep({
       summaryText,
       groupedFailure,
       alertTone,
+      pulseDue,
     };
   },
 });
@@ -570,7 +588,56 @@ const reportSchema = z.object({
   summaryText: z.string(),
   groupedFailure: z.boolean().optional(),
   alertTone: z.string().optional(),
+  pulseDue: z.boolean().optional(),
 });
+
+async function sendWeeklyPulse(logger: any): Promise<boolean> {
+  try {
+    const pulseState = await getPulseState();
+    const weekStart = new Date(pulseState.week_start);
+    const now = new Date();
+    const daysCovered = Math.max(1, Math.round((now.getTime() - weekStart.getTime()) / (1000 * 60 * 60 * 24)));
+
+    logger?.info(`📬 [weeklyPulse] Sending pulse email: ${pulseState.total_checks} checks over ${daysCovered} days`);
+
+    const pulseResponse = await monitorAgent.generateLegacy(
+      [
+        {
+          role: "user",
+          content: `Send me the Backcheck Weekly Pulse email. This is a short, trust-building summary of the past week's monitoring activity.
+
+Here are the stats for the past ${daysCovered} day(s):
+- Total checks performed: ${pulseState.total_checks}
+- Total issues detected: ${pulseState.total_issues}
+- Total downtime incidents: ${pulseState.total_down}
+
+Send an email with subject "Backcheck Weekly Pulse" using the send-email-notification tool.
+Write a very short, confident HTML email. The tone is calm and reassuring. Format:
+- One sentence: "Backcheck ran ${pulseState.total_checks} checks over the past ${daysCovered} days."
+- One sentence about issues: either "No issues were detected." or "X issues and Y downtime incidents were detected and reported."
+- Sign off with: "Silence is healthy. —Backcheck"
+Keep it under 5 sentences total. No tables, no charts. Just a clean pulse.`,
+        },
+      ],
+      { maxSteps: 3 }
+    );
+
+    const pulseToolResults = pulseResponse.steps?.flatMap((s: any) => s.toolResults || []) || [];
+    const pulseSent = pulseToolResults.some((r: any) => r?.result?.success === true || r?.success === true);
+
+    if (pulseSent) {
+      await resetPulseCounters();
+      logger?.info(`✅ [weeklyPulse] Weekly pulse sent and counters reset`);
+      return true;
+    } else {
+      logger?.error(`❌ [weeklyPulse] Failed to send weekly pulse email`);
+      return false;
+    }
+  } catch (e) {
+    logger?.error(`❌ [weeklyPulse] Error sending pulse: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
 
 const notifyNonLiveApps = createStep({
   id: "notify-non-live-apps",
@@ -689,6 +756,10 @@ Include the timestamp: ${inputData.reportTimestamp}`,
 
     logger?.info(`✅ [notifyNonLive] Alert notification confirmed sent`);
 
+    if (inputData.pulseDue) {
+      await sendWeeklyPulse(logger);
+    }
+
     return {
       notified: true,
       message: `Alert sent: ${inputData.nonLiveApps.length} down, ${inputData.issueApps.length} issue(s)`,
@@ -713,6 +784,11 @@ const confirmAllAppsLive = createStep({
 
     if (notifyMode === "alert-only") {
       logger?.info(`✅ [confirmAllLive] All ${inputData.totalApps} app(s) are live. NOTIFY_MODE=alert-only, skipping confirmation email.`);
+
+      if (inputData.pulseDue) {
+        await sendWeeklyPulse(logger);
+      }
+
       return {
         notified: false,
         message: `All ${inputData.totalApps} apps healthy. No email sent (alert-only mode).`,
@@ -754,6 +830,10 @@ Include the timestamp: ${inputData.reportTimestamp}`,
     }
 
     logger?.info(`✅ [confirmAllLive] Confirmation notification confirmed sent`);
+
+    if (inputData.pulseDue) {
+      await sendWeeklyPulse(logger);
+    }
 
     return {
       notified: true,

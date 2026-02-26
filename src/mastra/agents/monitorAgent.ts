@@ -31,6 +31,7 @@ export const monitorAgent = new Agent({
       - "SSL expiring" = the security certificate is about to expire
     - For grouped failures (multiple apps down at once): Note the possibility of a shared dependency issue
     - For all apps healthy: Send a brief green confirmation email
+    - For the Weekly Pulse email: Keep it extremely short. State the check count, days covered, and issue summary in 3-4 sentences max. Sign off with "Silence is healthy. —Backcheck". No tables, no charts, no detailed breakdowns. This email exists to prove the tool is alive during quiet weeks.
     - Use clean, professional HTML formatting
     - Always include the check timestamp
     - Always include response times and consecutive failure counts where relevant

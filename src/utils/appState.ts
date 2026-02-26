@@ -56,3 +56,55 @@ export async function updateAppState(
     ]
   );
 }
+
+export interface PulseState {
+  total_checks: number;
+  total_issues: number;
+  total_down: number;
+  week_start: Date;
+  last_pulse_sent: Date;
+}
+
+export async function getPulseState(): Promise<PulseState> {
+  const result = await pool.query(
+    `SELECT total_checks, total_issues, total_down, week_start, last_pulse_sent FROM backcheck_pulse WHERE id = 1`
+  );
+  if (result.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO backcheck_pulse (id, total_checks, total_issues, total_down, week_start, last_pulse_sent)
+       VALUES (1, 0, 0, 0, NOW(), NOW())
+       ON CONFLICT (id) DO NOTHING`
+    );
+    return { total_checks: 0, total_issues: 0, total_down: 0, week_start: new Date(), last_pulse_sent: new Date() };
+  }
+  return result.rows[0] as PulseState;
+}
+
+export async function incrementPulseCounters(appsChecked: number, issueCount: number, downCount: number): Promise<void> {
+  await pool.query(
+    `UPDATE backcheck_pulse
+     SET total_checks = total_checks + $1,
+         total_issues = total_issues + $2,
+         total_down = total_down + $3
+     WHERE id = 1`,
+    [appsChecked, issueCount, downCount]
+  );
+}
+
+export async function resetPulseCounters(): Promise<void> {
+  await pool.query(
+    `UPDATE backcheck_pulse
+     SET total_checks = 0,
+         total_issues = 0,
+         total_down = 0,
+         week_start = NOW(),
+         last_pulse_sent = NOW()
+     WHERE id = 1`
+  );
+}
+
+export async function isPulseDue(): Promise<boolean> {
+  const state = await getPulseState();
+  const daysSinceLastPulse = (Date.now() - new Date(state.last_pulse_sent).getTime()) / (1000 * 60 * 60 * 24);
+  return daysSinceLastPulse >= 7;
+}

@@ -4,6 +4,8 @@
 A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present). Includes SSL certificate expiration checking, retry-before-alert logic, slow response detection, alert-only mode, and email delivery verification.
 
 ## Recent Changes
+- 2026-02-26: Added AI Assistant chatbot — chat widget on homepage talks to the Backcheck agent via custom `/api/chat` endpoint using `generateLegacy`. Agent has memory (PostgreSQL, 20 messages) and a new `queryStatusTool` for reading app state from the database. Suggested questions for quick access.
+- 2026-02-26: Added landing page at `/api/homepage` — dark theme, product-focused copy ("The 200 OK Lie"), feature list, config example, philosophy section, chat widget. HTML inlined in `src/homepage.ts` for bundler compatibility.
 - 2026-02-26: Added content normalization before hashing — strips scripts, styles, CSRF tokens, timestamps, nonces, data attributes, and long hex strings before computing content hash. Eliminates false "content changed" alerts on dynamic pages.
 - 2026-02-26: Added configurable SSL warning threshold via `SSL_WARN_DAYS` env var (default: 14 days)
 - 2026-02-26: Added webhook notification tool — supports Slack, Discord, and generic webhook endpoints via `WEBHOOK_URL` env var. Sends alongside email, not instead of.
@@ -35,19 +37,25 @@ A time-based automation that monitors published Replit apps for liveness. It per
 
 ### Agent: `monitorAgent` (Backcheck Agent)
 - Model: GPT-4o via Replit AI Integrations
-- Tools: `checkUrlTool`, `sendEmailTool`, `sendWebhookTool`
+- Tools: `checkUrlTool`, `sendEmailTool`, `sendWebhookTool`, `queryStatusTool`
+- Memory: PostgreSQL-backed conversation memory (last 20 messages per thread)
+- Dual mode:
+  - **Automated monitoring**: Used in workflow notification steps to craft tone-appropriate emails and webhooks
+  - **AI Assistant**: Chat interface on the homepage for querying app status, explaining alerts, and configuration help
 - Instructions: Expo positioning — preventative monitoring, not diagnostic. Aware of SSL, slow response, biotics, warnings, content changes, grouped failures, tone escalation, and webhook notifications.
-- Used in notification steps to craft tone-appropriate email content and send webhook alerts
 
 ### Key Files
 - `src/mastra/workflows/monitorWorkflow.ts` - Main workflow with all monitoring logic + content normalization
-- `src/mastra/agents/monitorAgent.ts` - Agent definition
+- `src/mastra/agents/monitorAgent.ts` - Agent definition with dual-mode instructions and memory
 - `src/mastra/tools/checkUrlTool.ts` - URL liveness checker (standalone tool for agent use)
 - `src/mastra/tools/sendEmailTool.ts` - Email sender via Replit Mail
 - `src/mastra/tools/sendWebhookTool.ts` - Webhook sender (Slack/Discord/generic)
+- `src/mastra/tools/queryStatusTool.ts` - Database query tool for AI Assistant (reads app state, pulse, config)
 - `src/utils/replitmail.ts` - Replit Mail utility (from blueprint)
 - `src/utils/appState.ts` - Database state persistence (content hashes, failure counts, pulse tracking)
-- `src/mastra/index.ts` - Registration and cron trigger setup
+- `src/mastra/index.ts` - Registration, cron trigger, custom API routes (homepage + chat)
+- `src/homepage.ts` - Landing page HTML (inlined for bundler compatibility)
+- `src/mastra/public/index.html` - Landing page source with chat widget
 
 ### Database
 - **Table**: `backcheck_app_state` - Tracks per-URL monitoring state

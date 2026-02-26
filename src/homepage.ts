@@ -1,4 +1,5 @@
-<!DOCTYPE html>
+export function getHomepageHtml(): string {
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -853,4 +854,5 @@ APP_URLS="My SaaS|https://myapp.com|+welcome;-error,
   </script>
 
 </body>
-</html>
+</html>`;
+}

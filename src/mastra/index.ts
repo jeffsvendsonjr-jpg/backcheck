@@ -119,8 +119,63 @@ export const mastra = new Mastra({
         createHandler: async ({ mastra }) => inngestServe({ mastra, inngest }),
       },
 
-      // Add webhook triggers here (see Option 2 above)
-      // Example: ...registerSlackTrigger({ ... })
+      {
+        path: "/api/homepage",
+        method: "GET",
+        handler: async (c: any) => {
+          const { getHomepageHtml } = await import("../homepage");
+          return c.html(getHomepageHtml());
+        },
+      },
+      {
+        path: "/api/chat",
+        method: "POST",
+        createHandler: async ({ mastra }: any) => {
+          return async (c: any) => {
+            const logger = mastra?.getLogger();
+            try {
+              const body = await c.req.json();
+              const { messages, threadId, resourceId } = body;
+
+              if (!messages || !Array.isArray(messages) || messages.length === 0) {
+                return c.json({ error: "Messages array is required" }, 400);
+              }
+
+              const agent = mastra.getAgent("monitorAgent");
+              logger?.info("[Chat API] Generating response", { threadId, messageCount: messages.length });
+
+              const sanitizedMessages = messages
+                .filter((m: any) => m.role === "user")
+                .map((m: any) => ({ role: "user" as const, content: String(m.content).slice(0, 2000) }));
+
+              if (sanitizedMessages.length === 0) {
+                return c.json({ error: "No valid user messages provided" }, 400);
+              }
+
+              const safeThreadId = threadId || ("anon-" + Date.now());
+              const safeResourceId = resourceId || "web-visitor";
+
+              const response = await agent.generateLegacy(sanitizedMessages, {
+                maxSteps: 5,
+                memory: { thread: safeThreadId, resource: safeResourceId },
+                instructions: `You are in CHAT ASSISTANT MODE. You are helping a visitor understand Backcheck.
+CRITICAL RULES FOR CHAT MODE:
+- Do NOT call the send-email-notification tool under any circumstances
+- Do NOT call the send-webhook-notification tool under any circumstances
+- You may ONLY use the query-app-status tool and check-url-liveness tool
+- Be helpful, concise, and conversational
+- If asked to send emails or notifications, politely explain that is handled automatically by the monitoring system`,
+              });
+
+              logger?.info("[Chat API] Response generated successfully");
+              return c.json({ text: response.text });
+            } catch (error: any) {
+              logger?.error("[Chat API] Error", { error: error?.message });
+              return c.json({ error: "Failed to generate response", details: error?.message }, 500);
+            }
+          };
+        },
+      },
     ],
   },
   logger:

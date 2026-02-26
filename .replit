@@ -14,9 +14,9 @@ packages = ["jq"]
 MASTRA_HIDE_CLOUD_CTA = "true"
 
 [deployment]
-build = ["bash", "scripts/build.sh"]
-run = ["sh", "-c", "cd .mastra/output && NODE_ENV=production node index.mjs"]
-deploymentTarget = "cloudrun"
+build = ["npm", "run", "build"]
+run = ["bash", "-c", "./scripts/inngest.sh & sleep 3 && mastra dev"]
+deploymentTarget = "autoscale"
 
 [[ports]]
 localPort = 3000

@@ -691,6 +691,85 @@ APP_URLS="My SaaS|https://myapp.com|+welcome;-error,
     </div>
   </section>
 
+  <section class="how-section">
+    <div class="container">
+      <div class="section-label">Getting Started</div>
+      <h2>Up and running in 2 minutes.</h2>
+      <p>No accounts, no onboarding flow, no integrations page. Just environment variables.</p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">
+            <h3>Add your apps</h3>
+            <p>Set the <code style="color: var(--accent); background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px;">APP_URLS</code> environment variable. Format:<br>
+            <code style="color: var(--text-muted); font-size: 12px;">Name|URL|+biotic;-warning</code></p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">
+            <h3>Choose your notification style</h3>
+            <p>Set <code style="color: var(--accent); background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px;">NOTIFY_MODE=alert-only</code> to only hear when something breaks. Leave it unset for all-clear confirmations too.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">
+            <h3>Optional: Add webhooks</h3>
+            <p>Set <code style="color: var(--accent); background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px;">WEBHOOK_URL</code> to a Slack, Discord, or any HTTP endpoint. Backcheck auto-detects the platform.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-text">
+            <h3>Publish and forget</h3>
+            <p>Backcheck runs every hour by default. Change the schedule with <code style="color: var(--accent); background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px;">SCHEDULE_CRON_EXPRESSION</code> if you want.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="config-block" style="margin-top: 32px;">
+        <code><span class="comment"># Quick reference: all environment variables</span>
+
+<span class="comment"># Required</span>
+APP_URLS="My App|https://myapp.replit.app|+welcome;-error"
+
+<span class="comment"># Optional</span>
+NOTIFY_MODE=alert-only          <span class="comment"># or "all" (default)</span>
+WEBHOOK_URL=https://hooks.slack.com/...
+SSL_WARN_DAYS=14                <span class="comment"># days before cert expiry to warn</span>
+SCHEDULE_CRON_EXPRESSION=0 * * * *  <span class="comment"># default: every hour</span></code>
+      </div>
+
+      <div class="config-block">
+        <code><span class="comment"># APP_URLS format examples</span>
+
+<span class="comment"># Basic: just a URL</span>
+https://myapp.replit.app
+
+<span class="comment"># Named: Name|URL</span>
+My App|https://myapp.replit.app
+
+<span class="comment"># With content signals: Name|URL|signals</span>
+My App|https://myapp.replit.app|+welcome;+login;-error;-maintenance
+
+<span class="comment"># Multiple apps: comma-separated</span>
+App 1|https://app1.replit.app|+home,
+App 2|https://app2.replit.app|-error,
+API|https://api.myapp.com</code>
+      </div>
+
+      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-top: 8px;">
+        <div style="font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--accent);">What are biotics and warnings?</div>
+        <div style="font-size: 14px; color: var(--text-muted); line-height: 1.7;">
+          <strong style="color: var(--text);">Biotics (+)</strong> are words that <em>should</em> be on the page. Like vital signs. If "welcome" disappears from your homepage, something is wrong.<br><br>
+          <strong style="color: var(--text);">Warnings (-)</strong> are words that <em>should not</em> be on the page. If "error" or "maintenance" shows up, Backcheck catches it even though the server returned 200 OK.
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="philosophy">
     <div class="container">
       <div class="section-label">Philosophy</div>

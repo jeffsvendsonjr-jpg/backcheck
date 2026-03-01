@@ -4,6 +4,9 @@
 A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present). Includes SSL certificate expiration checking, retry-before-alert logic, slow response detection, alert-only mode, and email delivery verification.
 
 ## Recent Changes
+- 2026-03-01: Added content change dampening — requires 2 consecutive checks with the same new hash before flagging a content change. Eliminates false positives from dynamic pages (A/B tests, rotating content, GitHub homepage, etc.). Uses `pending_content_hash` column in `backcheck_app_state`.
+- 2026-03-01: Improved content normalization — now also strips JSON-LD blocks, dynamic meta tags (og:updated_time, last-modified), SVG elements, noscript blocks, aria-* attributes, and IDs containing hash-like values. Dramatically reduces false "content changed" alerts.
+- 2026-03-01: Cleared test URLs from APP_URLS (Google, GitHub, Fake Down App) to stop hourly alert email flood.
 - 2026-02-26: Added AI Assistant chatbot — chat widget on homepage talks to the Backcheck agent via custom `/api/chat` endpoint using `generateLegacy`. Agent has memory (PostgreSQL, 20 messages) and a new `queryStatusTool` for reading app state from the database. Suggested questions for quick access.
 - 2026-02-26: Added landing page at `/api/homepage` — dark theme, product-focused copy ("The 200 OK Lie"), feature list, config example, philosophy section, chat widget. HTML inlined in `src/homepage.ts` for bundler compatibility.
 - 2026-02-26: Added content normalization before hashing — strips scripts, styles, CSRF tokens, timestamps, nonces, data attributes, and long hex strings before computing content hash. Eliminates false "content changed" alerts on dynamic pages.
@@ -61,6 +64,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - **Table**: `backcheck_app_state` - Tracks per-URL monitoring state
   - `url` (TEXT, PK) - The monitored URL
   - `content_hash` (TEXT) - MD5 hash of normalized page content
+  - `pending_content_hash` (TEXT) - Pending hash for content change dampening (requires 2 consecutive different hashes)
   - `consecutive_failures` (INTEGER) - Count of consecutive check failures
   - `consecutive_slow` (INTEGER) - Count of consecutive slow responses
   - `last_status` (TEXT) - Last check result: "healthy", "issues", or "down"
@@ -81,8 +85,8 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - `WEBHOOK_URL` - Optional webhook endpoint for notifications. Supports Slack incoming webhooks, Discord webhooks, or any generic HTTP endpoint. When set, the agent sends webhook notifications alongside email.
 
 ### Monitoring Features
-- **Content normalization**: Before hashing, strips scripts, styles, HTML comments, CSRF tokens, nonces, timestamps, Unix epochs, long hex strings, and data attributes. Reduces false positives on dynamic pages.
-- **Page change detection**: Hashes normalized page content (MD5) and compares between checks. Alerts when meaningful content changes — catches accidental deploys, hacked pages, or wrong environments shipped.
+- **Content normalization**: Before hashing, strips scripts, styles, HTML comments, CSRF tokens, nonces, timestamps, Unix epochs, long hex strings, data attributes, JSON-LD blocks, dynamic meta tags (og:updated_time, last-modified), SVG elements, noscript blocks, aria-* attributes, and IDs containing hash-like values. Reduces false positives on dynamic pages.
+- **Page change detection**: Hashes normalized page content (MD5) and compares between checks. Uses dampening — requires 2 consecutive checks with the same new hash before flagging a content change. Eliminates false positives from A/B tests, rotating content, and dynamic homepages. Catches real accidental deploys, hacked pages, or wrong environments shipped.
 - **Alert tone escalation**: First failure = calm diagnostic. 2-3 consecutive = urgent. 4+ consecutive = brief status update. Prevents alert fatigue.
 - **Consecutive slow threshold**: Only flags slow responses after 2+ consecutive slow checks (>5000ms). Single spikes are ignored to reduce noise.
 - **Grouped failure detection**: When 2+ apps fail in the same cycle, notes "possible shared dependency issue" in the alert. Sends one email, not multiple.

@@ -9,6 +9,7 @@ const pool = new Pool({
 export interface AppState {
   url: string;
   content_hash: string | null;
+  pending_content_hash: string | null;
   consecutive_failures: number;
   consecutive_slow: number;
   last_status: string | null;
@@ -17,7 +18,7 @@ export interface AppState {
 
 export async function getAppState(url: string): Promise<AppState | null> {
   const result = await pool.query(
-    `SELECT url, content_hash, consecutive_failures, consecutive_slow, last_status, updated_at
+    `SELECT url, content_hash, pending_content_hash, consecutive_failures, consecutive_slow, last_status, updated_at
      FROM backcheck_app_state
      WHERE url = $1`,
     [url]
@@ -32,24 +33,27 @@ export async function updateAppState(
   url: string,
   updates: {
     contentHash?: string;
+    pendingContentHash?: string | null;
     consecutiveFailures?: number;
     consecutiveSlow?: number;
     lastStatus?: string;
   }
 ): Promise<void> {
   await pool.query(
-    `INSERT INTO backcheck_app_state (url, content_hash, consecutive_failures, consecutive_slow, last_status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())
+    `INSERT INTO backcheck_app_state (url, content_hash, pending_content_hash, consecutive_failures, consecutive_slow, last_status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW())
      ON CONFLICT (url)
      DO UPDATE SET
        content_hash = COALESCE($2, backcheck_app_state.content_hash),
-       consecutive_failures = COALESCE($3, backcheck_app_state.consecutive_failures),
-       consecutive_slow = COALESCE($4, backcheck_app_state.consecutive_slow),
-       last_status = COALESCE($5, backcheck_app_state.last_status),
+       pending_content_hash = $3,
+       consecutive_failures = COALESCE($4, backcheck_app_state.consecutive_failures),
+       consecutive_slow = COALESCE($5, backcheck_app_state.consecutive_slow),
+       last_status = COALESCE($6, backcheck_app_state.last_status),
        updated_at = NOW()`,
     [
       url,
       updates.contentHash ?? null,
+      updates.pendingContentHash ?? null,
       updates.consecutiveFailures ?? null,
       updates.consecutiveSlow ?? null,
       updates.lastStatus ?? null,

@@ -30,6 +30,8 @@ function normalizeContentForHashing(html: string): string {
   normalized = normalized.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
   normalized = normalized.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
   normalized = normalized.replace(/<!--[\s\S]*?-->/g, "");
+  normalized = normalized.replace(/<script\s+type\s*=\s*["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi, "");
+  normalized = normalized.replace(/<meta\b[^>]*(?:og:updated_time|last-modified|date|revised|modified)[^>]*>/gi, "");
   normalized = normalized.replace(/\b(csrf|nonce|token|_token|authenticity_token)\s*[:=]\s*["'][^"']*["']/gi, "");
   normalized = normalized.replace(/\b(csrf|nonce|token)["']?\s*:\s*["'][^"']*["']/gi, "");
   normalized = normalized.replace(/<(input|meta)[^>]*(csrf|nonce|token|_token)[^>]*>/gi, "");
@@ -40,6 +42,10 @@ function normalizeContentForHashing(html: string): string {
     return match;
   });
   normalized = normalized.replace(/data-[\w-]+=["'][^"']*["']/gi, "");
+  normalized = normalized.replace(/aria-[\w-]+=["'][^"']*["']/gi, "");
+  normalized = normalized.replace(/\bid=["'][^"']*[a-f0-9]{8,}[^"']*["']/gi, "");
+  normalized = normalized.replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, "");
+  normalized = normalized.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, "");
   normalized = normalized.replace(/\s+/g, " ");
   normalized = normalized.trim();
   return normalized;
@@ -272,8 +278,12 @@ const verifyAppLiveness = createStep({
             contentHash = crypto.createHash("md5").update(normalizedBody).digest("hex");
 
             if (previousState?.content_hash && previousState.content_hash !== contentHash) {
-              contentChanged = true;
-              logger?.warn(`🔄 [verifyAppLiveness] ${inputData.name}: Page content has CHANGED since last check`);
+              if (previousState.pending_content_hash && previousState.pending_content_hash === contentHash) {
+                contentChanged = true;
+                logger?.warn(`🔄 [verifyAppLiveness] ${inputData.name}: Page content has CHANGED (confirmed across 2 consecutive checks)`);
+              } else {
+                logger?.info(`🔄 [verifyAppLiveness] ${inputData.name}: Content hash differs — storing as pending, will confirm on next check (hash: ${contentHash.slice(0, 8)}...)`);
+              }
             } else if (!previousState?.content_hash) {
               logger?.info(`📝 [verifyAppLiveness] ${inputData.name}: First content hash recorded: ${contentHash.slice(0, 8)}...`);
             } else {
@@ -336,9 +346,18 @@ const verifyAppLiveness = createStep({
 
         const newConsecutiveFailures = (isLive && !hasIssues) ? 0 : (previousState?.consecutive_failures ?? 0) + 1;
 
+        const isFirstHash = contentHash && !previousState?.content_hash;
+        const pendingHash = (() => {
+          if (!contentHash || !previousState?.content_hash) return null;
+          if (previousState.content_hash === contentHash) return null;
+          if (contentChanged) return null;
+          return contentHash;
+        })();
+
         try {
           await updateAppState(inputData.url, {
-            contentHash,
+            contentHash: (contentChanged || isFirstHash) ? contentHash : undefined,
+            pendingContentHash: pendingHash,
             consecutiveFailures: isLive ? (hasIssues ? newConsecutiveFailures : 0) : newConsecutiveFailures,
             consecutiveSlow: newConsecutiveSlow,
             lastStatus: isLive ? (hasIssues ? "issues" : "healthy") : "down",

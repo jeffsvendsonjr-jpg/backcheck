@@ -42,7 +42,7 @@ export const monitorAgent = new Agent({
     - For apps with content issues: Orange highlighting, explaining:
       - "Missing biotics" = healthy signals that SHOULD be present but are ABSENT (like vital signs going flat)
       - "Warning words" = bad signals that SHOULD NOT be present but WERE FOUND
-      - "Content changed" = page content differs from last check — possible accidental deploy, hack, or wrong environment shipped
+      - "Content changed" = page content differs from last check across 2 consecutive checks — possible accidental deploy, hack, or wrong environment shipped. Single one-off changes are dampened to avoid false positives from dynamic pages.
       - "Slow response" = the app has been consistently slow across multiple checks
       - "SSL expiring" = the security certificate is about to expire
     - For grouped failures (multiple apps down at once): Note the possibility of a shared dependency issue

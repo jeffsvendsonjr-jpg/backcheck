@@ -90,6 +90,26 @@ export const mastra = new Mastra({
         await next();
       },
       async (c, next) => {
+        const url = new URL(c.req.url);
+        const protectedPaths = ["/dashboard", "/api/test-failure"];
+        const requiresAuth = protectedPaths.some((p) => url.pathname === p || url.pathname.startsWith(p + "/"));
+        const password = process.env.DASHBOARD_PASSWORD;
+        if (requiresAuth && password) {
+          const authHeader = c.req.header("authorization") || "";
+          const expected = "Basic " + Buffer.from(`backcheck:${password}`).toString("base64");
+          const crypto = await import("node:crypto");
+          const a = Buffer.from(authHeader);
+          const b = Buffer.from(expected);
+          const matches = a.length === b.length && crypto.timingSafeEqual(a, b);
+          if (!matches) {
+            return c.body("Authentication required", 401, {
+              "WWW-Authenticate": 'Basic realm="Backcheck Dashboard"',
+            });
+          }
+        }
+        await next();
+      },
+      async (c, next) => {
         const mastra = c.get("mastra");
         const logger = mastra?.getLogger();
         logger?.debug("[Request]", { method: c.req.method, url: c.req.url });

@@ -3,7 +3,9 @@ import { z } from "zod";
 import * as tls from "node:tls";
 import * as crypto from "node:crypto";
 import { monitorAgent } from "../agents/monitorAgent";
-import { getAppState, updateAppState, incrementPulseCounters, isPulseDue, getPulseState, resetPulseCounters } from "../../utils/appState";
+import { getAppState, updateAppState, incrementPulseCounters, isPulseDue, getPulseState, resetPulseCounters, tryAcquireRunLock, releaseRunLock } from "../../utils/appState";
+
+const CURRENT_RUN_ID = { value: "" };
 
 const appResultSchema = z.object({
   url: z.string(),
@@ -70,10 +72,20 @@ const collectAppUrls = createStep({
     const logger = mastra?.getLogger();
     logger?.info("📋 [collectAppUrls] Collecting app URLs from environment...");
 
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const acquired = await tryAcquireRunLock(runId);
+    if (!acquired) {
+      logger?.warn(`🔒 [collectAppUrls] Another workflow run is already in progress. Skipping this run to prevent duplicate alerts.`);
+      return [];
+    }
+    CURRENT_RUN_ID.value = runId;
+    logger?.info(`🔓 [collectAppUrls] Run lock acquired: ${runId}`);
+
     const rawUrls = process.env.APP_URLS || "";
 
     if (!rawUrls.trim()) {
       logger?.warn("⚠️ [collectAppUrls] No APP_URLS environment variable set. Nothing to monitor.");
+      await releaseRunLock(runId);
       return [];
     }
 
@@ -601,6 +613,16 @@ const compileVerificationReport = createStep({
       }
     } catch (e) {
       logger?.warn(`⚠️ [compileReport] Could not check pulse status: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    if (CURRENT_RUN_ID.value) {
+      try {
+        await releaseRunLock(CURRENT_RUN_ID.value);
+        logger?.info(`🔓 [compileReport] Run lock released: ${CURRENT_RUN_ID.value}`);
+      } catch (e) {
+        logger?.warn(`⚠️ [compileReport] Failed to release run lock: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      CURRENT_RUN_ID.value = "";
     }
 
     return {

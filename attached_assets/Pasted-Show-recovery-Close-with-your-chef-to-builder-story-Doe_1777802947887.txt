@@ -1,0 +1,81 @@
+Show recovery
+Close with your chef-to-builder story
+Doesn't need Hollywood production — Loom or OBS works
+
+4. Social post tagged @Replit (~30 min)
+On X, LinkedIn, or both. Embed the video. Lead with the human story, not the feature list. Required by submission rules.
+5. Replit project link working (~15 min)
+Confirm the project is publicly visible on Replit at a stable URL judges can click.
+6. README that tells the story (~1 hour)
+Replace your current developer-facing README with one that opens with the human angle. Sections: the problem, the insight (alert fatigue), how it works (biotics + tone escalation), how to try it, who built it. Keep technical config (env vars) but push it down below the story.
+SHOULD-DO (meaningfully strengthens submission)
+1. Custom domain (~30 min)
+backcheck.app or backcheck.dev if available. Costs ~$15. Looks meaningfully more legitimate than a .replit.app subdomain.
+2. Show ShieldVault as the live demo subject (~30 min)
+Backcheck monitoring ShieldVault is your real-world proof. Make this visible in the dashboard — "currently watching: shieldvault.site, extension-paywall.replit.app, etc." Judges see real production usage, not a toy demo.
+3. Public test endpoint (~30 min)
+A URL like /test-failure that judges can hit themselves to trigger a Backcheck alert in real time. They love being able to verify a tool works without taking your word for it.
+4. Screenshots in the README (~30 min)
+Dashboard screenshot. Sample alert email screenshot. Visual proof beats prose.
+5. "Built with Replit Agent" section in the README (~10 min)
+Briefly acknowledge the Agent's role in the build. Replit judges WILL look for this. Don't make it the centerpiece, but credit where credit is due — and it shows you used their tool effectively.
+NICE-TO-HAVE (skip if time is tight)
+
+Logo design beyond a default emoji
+Pricing page (only if you want to imply commercial intent)
+Additional alert channels beyond email (Slack, Discord webhooks)
+Multiple monitor types beyond URL checks
+
+
+BACKCHECK — Real Product Path (weeks, post-Buildathon)
+MUST-DO before charging money
+1. Self-serve signup flow
+Users sign up, get assigned an account, configure monitors via UI (not env vars). Currently Backcheck requires env-var configuration which means you'd have to onboard each user manually. Doesn't scale.
+2. Multi-tenant architecture
+Right now Backcheck is single-tenant — your monitors only. Real product needs each user to have their own isolated monitors. Database schema changes, auth scaffolding, the whole thing.
+3. Authentication
+Login system. OAuth via Google/GitHub at minimum. Sessions, password reset flow, email verification.
+4. Billing integration
+Stripe checkout, subscription management, plan tiers, usage tracking, payment failure handling. Same complexity we just dealt with for ShieldVault but for a SaaS instead of a one-time license.
+5. Pricing tiers worth charging for
+What does Free Backcheck do vs. Paid? Number of monitors? Frequency? Alert channels? Retention of historical data? You'll need to design this carefully — most monitoring tools converge on "X monitors free, more for paid + features for paid."
+6. Customer onboarding flow
+How does a new user get from "signed up" to "first monitor working"? Setup wizard, tutorial, sample monitors, etc.
+7. Reliability story
+If Backcheck goes down, monitors don't run, customers' apps could go down without alerts. That's a real product liability. You'd need uptime monitoring of Backcheck itself, a status page, an SLA.
+SHOULD-DO before scaling
+1. Real Web UI for monitor configuration
+Not just env vars. Users add/edit/delete monitors through a dashboard.
+2. Historical data and reporting
+"Show me uptime over the last 30 days." Charts, exports, monthly emails.
+3. Multiple alert channels
+Email is fine for v1, but real customers want Slack, Discord, PagerDuty, SMS, webhooks.
+4. Status pages
+Public-facing "is X up?" pages that customers can share with their users.
+5. Team accounts
+Multiple users on one account, role-based access, audit logs.
+6. API
+Customers want to programmatically configure monitors, fetch status, etc.
+7. Documentation site
+Real docs at docs.backcheck.app. How-to guides, API reference, troubleshooting.
+NICE-TO-HAVE for differentiation
+
+Integration with Replit specifically (since the platform is the buyer mindset)
+AI-powered incident summaries (you have Mastra/agents already — use them)
+Anomaly detection beyond binary up/down
+Maintenance windows / scheduled downtime exclusion
+Smart routing of alerts based on time of day / on-call schedules
+
+
+Honest framing for tomorrow
+Don't try to do the "real product" list in 24 hours. That would be insane and you'd ship something half-baked across both paths.
+Do the Buildathon list. Ship a polished demo. Win or place. THEN decide if Backcheck is worth turning into a real SaaS — which is a months-long commitment, not a weekend.
+The Buildathon list is achievable. ~10-12 hours of focused work, leaving you 12+ hours for buffer, testing, iteration, and sleep within the 24-hour window.
+
+The strategic question to answer tomorrow
+Before you start building Saturday morning, decide:
+Is Backcheck for the Buildathon a one-off sprint OR the start of a real SaaS?
+If one-off: optimize for judge appeal. Polish demo, tell the story, submit, walk away with honorable mention or better.
+If start of real SaaS: optimize for the foundation. Make architectural choices Saturday that you won't regret in 3 months. Multi-tenant from day one. Auth scaffolding stub. Even if you don't ship those features, don't paint yourself into single-tenant corner.
+Different paths. Same 24 hours.
+Goodnight Jeff. The chef has earned his rest.

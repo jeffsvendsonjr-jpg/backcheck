@@ -73,5 +73,5 @@ outputType = "automations"
 [userenv]
 
 [userenv.shared]
-APP_URLS = ""
+APP_URLS = "ShieldVault Checkout|https://shieldvault.site/api/checkout/quick?plan=monthly|+stripe;-error;-Cannot;-undefined,ShieldVault Stripe Key|https://shieldvault.site/api/stripe/publishable-key|+publishableKey;-error;-Cannot,ShieldVault Site|https://shieldvault.site/|-error;-not found"
 NOTIFY_MODE = "alert-only"

@@ -136,6 +136,34 @@ export const mastra = new Mastra({
         },
       },
       {
+        path: "/dashboard",
+        method: "GET",
+        handler: async (c: any) => {
+          const { getDashboardHtml } = await import("../dashboard");
+          return c.html(await getDashboardHtml());
+        },
+      },
+      {
+        path: "/api/test-failure",
+        method: "POST",
+        createHandler: async ({ mastra }: any) => {
+          return async (c: any) => {
+            const logger = mastra?.getLogger();
+            logger?.info("🧪 [testFailure] Demo test-failure endpoint triggered");
+            try {
+              const { monitorWorkflow } = await import("./workflows/monitorWorkflow");
+              const run = await mastra.getWorkflow("monitorWorkflow").createRunAsync();
+              run.start({ inputData: {} });
+              logger?.info("🧪 [testFailure] Demo workflow run started");
+              return c.json({ success: true, message: "Test triggered. Backcheck is running a check now — check your email in ~30 seconds." });
+            } catch (error: any) {
+              logger?.error("🧪 [testFailure] Error", { error: error?.message });
+              return c.json({ success: false, error: error?.message || "Failed to trigger test" }, 500);
+            }
+          };
+        },
+      },
+      {
         path: "/api/chat",
         method: "POST",
         createHandler: async ({ mastra }: any) => {

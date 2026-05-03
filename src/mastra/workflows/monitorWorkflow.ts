@@ -489,15 +489,15 @@ const compileVerificationReport = createStep({
     logger?.info(`📊 [compileReport] Compiling report for ${inputData.length} app(s)...`);
 
     if (inputData.length === 0) {
-      logger?.warn("⚠️ [compileReport] No apps were checked! APP_URLS may be empty or misconfigured.");
+      logger?.warn("⚠️ [compileReport] No apps configured — set APP_URLS to start monitoring. Skipping notification.");
       return {
         totalApps: 0,
         liveApps: [],
         nonLiveApps: [],
         issueApps: [],
-        hasProblems: true,
+        hasProblems: false,
         reportTimestamp: new Date().toISOString(),
-        summaryText: "WARNING: No apps were checked. Please verify your APP_URLS configuration.",
+        summaryText: "No apps configured. Set APP_URLS to start monitoring.",
       };
     }
 

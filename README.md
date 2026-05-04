@@ -4,7 +4,7 @@
 
 Most uptime monitors check if your server responds. Backcheck checks what your users actually see.
 
-→ **[Live Demo Dashboard](https://13f00adb-c665-4dc6-8256-77dbdf17e39f-00-246grmi79egmd.janeway.replit.dev/dashboard)**
+→ **[Live Demo Dashboard](https://13f00adb-c665-4dc6-8256-77dbdf17e39f.replit.app/dashboard)**
 
 ---
 
@@ -84,6 +84,7 @@ NOTIFY_MODE=alert-only                  # only email on problems (default: all)
 WEBHOOK_URL=https://hooks.slack.com/... # Slack, Discord, or any webhook
 SSL_WARN_DAYS=14                        # days before cert expiry to warn
 SCHEDULE_CRON_EXPRESSION=0 * * * *      # default: every hour
+DASHBOARD_PASSWORD=yoursecret            # protect /dashboard with Basic Auth
 ```
 
 ### URL format
@@ -121,7 +122,7 @@ Prefix signals with `+` for biotics (must be present) or `-` for warnings (must 
 
 ## Demo
 
-**[Open the live dashboard →](https://13f00adb-c665-4dc6-8256-77dbdf17e39f-00-246grmi79egmd.janeway.replit.dev/dashboard)**
+**[Open the live dashboard →](https://13f00adb-c665-4dc6-8256-77dbdf17e39f.replit.app/dashboard)**
 
 The dashboard shows real-time status of all monitored apps, weekly pulse stats, and a "Trigger test failure" button that runs the full monitoring pipeline and sends a real alert email.
 
@@ -150,6 +151,12 @@ It's designed for solo devs, freelancers, and small teams — the people who shi
 This project was built collaboratively with Replit Agent — from the initial monitoring workflow through content change detection, alert tone escalation, database state management, the landing page, and the AI chat assistant. The agent handled the TypeScript, the database schema, the normalization logic, and the multi-step Inngest workflow. I handled the product decisions, the positioning, and the testing against real apps.
 
 That split — human judgment on what to build, agent execution on how to build it — is what made a solo build of this scope possible in a buildathon window.
+
+---
+
+## License
+
+ISC — do whatever you want with it.
 
 ---
 

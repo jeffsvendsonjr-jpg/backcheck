@@ -156,7 +156,7 @@ That split — human judgment on what to build, agent execution on how to build 
 
 ## License
 
-ISC — do whatever you want with it.
+Business Source License 1.1 — you can read, fork, self-host, and modify Backcheck freely. You just can't use it to build a competing commercial monitoring service. Converts to Apache 2.0 in 2030.
 
 ---
 

@@ -1,6 +1,7 @@
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { z } from "zod";
+import pRetry, { AbortError } from "p-retry";
 
 // Replit Mail integration - sends emails to the user's verified Replit email
 // Note: to/cc are not included - emails are sent to the user's verified Replit email
@@ -48,26 +49,47 @@ export async function sendEmail(message: SmtpMessage): Promise<{
   messageId: string;
   response: string;
 }> {
-  const { hostname, authToken } = await getAuthToken();
+  return pRetry(
+    async (_attemptNumber: number) => {
+      const { hostname, authToken } = await getAuthToken();
 
-  const response = await fetch(`https://${hostname}/api/v2/mailer/send`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Replit-Authentication": authToken,
+      const response = await fetch(`https://${hostname}/api/v2/mailer/send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Replit-Authentication": authToken,
+        },
+        body: JSON.stringify({
+          subject: message.subject,
+          text: message.text,
+          html: message.html,
+          attachments: message.attachments,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({})) as { message?: string };
+        const status = response.status;
+        const msg = (error as any).message || `HTTP ${status}`;
+        // 4xx errors are non-retriable (bad request, auth failure, etc.)
+        if (status >= 400 && status < 500) {
+          throw new AbortError(msg);
+        }
+        // 5xx and network errors are retriable
+        throw new Error(`[replitmail] Send failed: ${msg}`);
+      }
+
+      return await response.json();
     },
-    body: JSON.stringify({
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
-      attachments: message.attachments,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.message || "Failed to send email");
-  }
-
-  return await response.json();
+    {
+      retries: 2,
+      minTimeout: 1000,
+      maxTimeout: 5000,
+      onFailedAttempt: (error: any) => {
+        console.warn(
+          `[replitmail] Email send attempt ${error.attemptNumber}/${error.retriesLeft + error.attemptNumber} failed: ${error.message}`
+        );
+      },
+    }
+  );
 }

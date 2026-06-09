@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as tls from "node:tls";
 import * as crypto from "node:crypto";
 import { monitorAgent } from "../agents/monitorAgent";
-import { getAppState, updateAppState, incrementPulseCounters, isPulseDue, getPulseState, resetPulseCounters, tryAcquireRunLock, releaseRunLock } from "../../utils/appState";
+import { getAppState, updateAppState, incrementPulseCounters, isPulseDue, getPulseState, resetPulseCounters, tryAcquireRunLock, releaseRunLock, logRunOutcome } from "../../utils/appState";
 import { isUrlSafetyError, readResponseTextCapped, safeFetchUrl, validateMonitorUrl } from "../../utils/urlSafety";
 
 const CURRENT_RUN_ID = { value: "" };
@@ -500,14 +500,29 @@ const compileVerificationReport = createStep({
     summaryText: z.string(),
     groupedFailure: z.boolean().optional(),
     alertTone: z.string().optional(),
+    runId: z.string().optional(),
   }),
 
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
     logger?.info(`📊 [compileReport] Compiling report for ${inputData.length} app(s)...`);
 
+    // Capture run ID before releasing the lock so it can be forwarded to
+    // the notification step for run-outcome correlation.
+    const runId = CURRENT_RUN_ID.value || undefined;
+
     if (inputData.length === 0) {
       logger?.warn("⚠️ [compileReport] No apps configured — set APP_URLS to start monitoring. Skipping notification.");
+
+      if (CURRENT_RUN_ID.value) {
+        try {
+          await releaseRunLock(CURRENT_RUN_ID.value);
+        } catch (e) {
+          logger?.warn(`⚠️ [compileReport] Failed to release run lock: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        CURRENT_RUN_ID.value = "";
+      }
+
       return {
         totalApps: 0,
         liveApps: [],
@@ -516,6 +531,7 @@ const compileVerificationReport = createStep({
         hasProblems: false,
         reportTimestamp: new Date().toISOString(),
         summaryText: "No apps configured. Set APP_URLS to start monitoring.",
+        runId,
       };
     }
 
@@ -645,6 +661,7 @@ const compileVerificationReport = createStep({
       groupedFailure,
       alertTone,
       pulseDue,
+      runId,
     };
   },
 });
@@ -660,6 +677,7 @@ const reportSchema = z.object({
   groupedFailure: z.boolean().optional(),
   alertTone: z.string().optional(),
   pulseDue: z.boolean().optional(),
+  runId: z.string().optional(),
 });
 
 async function sendWeeklyPulse(logger: any): Promise<boolean> {
@@ -826,6 +844,17 @@ Also send a webhook notification using the send-webhook-notification tool with i
 
     if (!emailSent) {
       logger?.error("❌ [notifyNonLive] Agent did not successfully send the alert email! Tool results:", { toolResults });
+
+      logRunOutcome({
+        runId: inputData.runId,
+        appsChecked: inputData.totalApps,
+        appsHealthy: inputData.liveApps.length,
+        appsDown: inputData.nonLiveApps.length,
+        appsIssues: inputData.issueApps.length,
+        notificationSent: false,
+        notificationError: "Agent did not invoke email tool or tool call failed",
+      }).catch((e) => logger?.warn(`⚠️ [notifyNonLive] Could not record run log: ${e?.message}`));
+
       return {
         notified: false,
         message: `FAILED to send alert email for ${inputData.nonLiveApps.length} down, ${inputData.issueApps.length} issue(s). Email tool was not invoked or failed.`,
@@ -833,6 +862,15 @@ Also send a webhook notification using the send-webhook-notification tool with i
     }
 
     logger?.info(`✅ [notifyNonLive] Alert notification confirmed sent`);
+
+    logRunOutcome({
+      runId: inputData.runId,
+      appsChecked: inputData.totalApps,
+      appsHealthy: inputData.liveApps.length,
+      appsDown: inputData.nonLiveApps.length,
+      appsIssues: inputData.issueApps.length,
+      notificationSent: true,
+    }).catch((e) => logger?.warn(`⚠️ [notifyNonLive] Could not record run log: ${e?.message}`));
 
     if (inputData.pulseDue) {
       await sendWeeklyPulse(logger);
@@ -862,6 +900,15 @@ const confirmAllAppsLive = createStep({
 
     if (notifyMode === "alert-only") {
       logger?.info(`✅ [confirmAllLive] All ${inputData.totalApps} app(s) are live. NOTIFY_MODE=alert-only, skipping confirmation email.`);
+
+      logRunOutcome({
+        runId: inputData.runId,
+        appsChecked: inputData.totalApps,
+        appsHealthy: inputData.liveApps.length,
+        appsDown: inputData.nonLiveApps.length,
+        appsIssues: inputData.issueApps.length,
+        notificationSent: false,
+      }).catch((e) => logger?.warn(`⚠️ [confirmAllLive] Could not record run log: ${e?.message}`));
 
       if (inputData.pulseDue) {
         await sendWeeklyPulse(logger);
@@ -903,6 +950,17 @@ Also send a webhook notification using the send-webhook-notification tool with i
 
     if (!emailSent) {
       logger?.error("❌ [confirmAllLive] Agent did not successfully send the confirmation email! Tool results:", { toolResults });
+
+      logRunOutcome({
+        runId: inputData.runId,
+        appsChecked: inputData.totalApps,
+        appsHealthy: inputData.liveApps.length,
+        appsDown: inputData.nonLiveApps.length,
+        appsIssues: inputData.issueApps.length,
+        notificationSent: false,
+        notificationError: "Agent did not invoke email tool or tool call failed",
+      }).catch((e) => logger?.warn(`⚠️ [confirmAllLive] Could not record run log: ${e?.message}`));
+
       return {
         notified: false,
         message: `FAILED to send confirmation email. Email tool was not invoked or failed.`,
@@ -910,6 +968,15 @@ Also send a webhook notification using the send-webhook-notification tool with i
     }
 
     logger?.info(`✅ [confirmAllLive] Confirmation notification confirmed sent`);
+
+    logRunOutcome({
+      runId: inputData.runId,
+      appsChecked: inputData.totalApps,
+      appsHealthy: inputData.liveApps.length,
+      appsDown: inputData.nonLiveApps.length,
+      appsIssues: inputData.issueApps.length,
+      notificationSent: true,
+    }).catch((e) => logger?.warn(`⚠️ [confirmAllLive] Could not record run log: ${e?.message}`));
 
     if (inputData.pulseDue) {
       await sendWeeklyPulse(logger);

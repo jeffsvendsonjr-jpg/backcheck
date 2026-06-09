@@ -6,6 +6,59 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || "postgresql://localhost:5432/mastra",
 });
 
+// ============================================================================
+// Table bootstrap helpers — idempotent CREATE TABLE IF NOT EXISTS guards
+// ============================================================================
+
+let appStateTableReady = false;
+
+async function ensureAppStateTable(): Promise<void> {
+  if (appStateTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backcheck_app_state (
+      url TEXT PRIMARY KEY,
+      content_hash TEXT,
+      pending_content_hash TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      consecutive_slow INTEGER NOT NULL DEFAULT 0,
+      last_status TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  appStateTableReady = true;
+}
+
+let pulseTableReady = false;
+
+async function ensurePulseTable(): Promise<void> {
+  if (pulseTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backcheck_pulse (
+      id INTEGER PRIMARY KEY,
+      total_checks INTEGER NOT NULL DEFAULT 0,
+      total_issues INTEGER NOT NULL DEFAULT 0,
+      total_down INTEGER NOT NULL DEFAULT 0,
+      week_start TIMESTAMPTZ,
+      last_pulse_sent TIMESTAMPTZ,
+      last_run_started_at TIMESTAMPTZ,
+      last_run_completed_at TIMESTAMPTZ,
+      last_run_id TEXT,
+      consecutive_notif_failures INTEGER NOT NULL DEFAULT 0,
+      last_notif_failure_at TIMESTAMPTZ
+    )
+  `);
+  // Migrate existing tables that pre-date the new columns.
+  await pool.query(`
+    ALTER TABLE backcheck_pulse
+      ADD COLUMN IF NOT EXISTS consecutive_notif_failures INTEGER NOT NULL DEFAULT 0
+  `).catch(() => {});
+  await pool.query(`
+    ALTER TABLE backcheck_pulse
+      ADD COLUMN IF NOT EXISTS last_notif_failure_at TIMESTAMPTZ
+  `).catch(() => {});
+  pulseTableReady = true;
+}
+
 export interface AppState {
   url: string;
   content_hash: string | null;
@@ -17,6 +70,7 @@ export interface AppState {
 }
 
 export async function getAppState(url: string): Promise<AppState | null> {
+  await ensureAppStateTable();
   const result = await pool.query(
     `SELECT url, content_hash, pending_content_hash, consecutive_failures, consecutive_slow, last_status, updated_at
      FROM backcheck_app_state
@@ -39,6 +93,7 @@ export async function updateAppState(
     lastStatus?: string;
   }
 ): Promise<void> {
+  await ensureAppStateTable();
   await pool.query(
     `INSERT INTO backcheck_app_state (url, content_hash, pending_content_hash, consecutive_failures, consecutive_slow, last_status, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -67,24 +122,44 @@ export interface PulseState {
   total_down: number;
   week_start: Date;
   last_pulse_sent: Date;
+  consecutive_notif_failures: number;
+  last_notif_failure_at: Date | null;
 }
 
 export async function getPulseState(): Promise<PulseState> {
+  await ensurePulseTable();
   const result = await pool.query(
-    `SELECT total_checks, total_issues, total_down, week_start, last_pulse_sent FROM backcheck_pulse WHERE id = 1`
+    `SELECT total_checks, total_issues, total_down, week_start, last_pulse_sent,
+            consecutive_notif_failures, last_notif_failure_at
+     FROM backcheck_pulse WHERE id = 1`
   );
   if (result.rows.length === 0) {
     await pool.query(
-      `INSERT INTO backcheck_pulse (id, total_checks, total_issues, total_down, week_start, last_pulse_sent)
-       VALUES (1, 0, 0, 0, NOW(), NOW())
+      `INSERT INTO backcheck_pulse (id, total_checks, total_issues, total_down, week_start, last_pulse_sent,
+                                    consecutive_notif_failures)
+       VALUES (1, 0, 0, 0, NOW(), NOW(), 0)
        ON CONFLICT (id) DO NOTHING`
     );
-    return { total_checks: 0, total_issues: 0, total_down: 0, week_start: new Date(), last_pulse_sent: new Date() };
+    return {
+      total_checks: 0,
+      total_issues: 0,
+      total_down: 0,
+      week_start: new Date(),
+      last_pulse_sent: new Date(),
+      consecutive_notif_failures: 0,
+      last_notif_failure_at: null,
+    };
   }
-  return result.rows[0] as PulseState;
+  const row = result.rows[0];
+  return {
+    ...row,
+    consecutive_notif_failures: row.consecutive_notif_failures ?? 0,
+    last_notif_failure_at: row.last_notif_failure_at ?? null,
+  } as PulseState;
 }
 
 export async function incrementPulseCounters(appsChecked: number, issueCount: number, downCount: number): Promise<void> {
+  await ensurePulseTable();
   await pool.query(
     `UPDATE backcheck_pulse
      SET total_checks = total_checks + $1,
@@ -96,6 +171,7 @@ export async function incrementPulseCounters(appsChecked: number, issueCount: nu
 }
 
 export async function resetPulseCounters(): Promise<void> {
+  await ensurePulseTable();
   await pool.query(
     `UPDATE backcheck_pulse
      SET total_checks = 0,
@@ -116,9 +192,11 @@ export async function isPulseDue(): Promise<boolean> {
 const RUN_LOCK_STALE_MINUTES = 10;
 
 export async function tryAcquireRunLock(runId: string): Promise<boolean> {
+  await ensurePulseTable();
   await pool.query(
-    `INSERT INTO backcheck_pulse (id, total_checks, total_issues, total_down, week_start, last_pulse_sent)
-     VALUES (1, 0, 0, 0, NOW(), NOW())
+    `INSERT INTO backcheck_pulse (id, total_checks, total_issues, total_down, week_start, last_pulse_sent,
+                                  consecutive_notif_failures)
+     VALUES (1, 0, 0, 0, NOW(), NOW(), 0)
      ON CONFLICT (id) DO NOTHING`
   );
 
@@ -140,10 +218,180 @@ export async function tryAcquireRunLock(runId: string): Promise<boolean> {
 }
 
 export async function releaseRunLock(runId: string): Promise<void> {
+  await ensurePulseTable();
   await pool.query(
     `UPDATE backcheck_pulse
      SET last_run_completed_at = NOW()
      WHERE id = 1 AND last_run_id = $1`,
     [runId]
   );
+}
+
+// Update the consecutive notification failure streak counter.
+// Called after each notification attempt to maintain a running count.
+async function updateNotificationStreak(success: boolean): Promise<void> {
+  await ensurePulseTable();
+  if (success) {
+    await pool.query(
+      `UPDATE backcheck_pulse
+       SET consecutive_notif_failures = 0
+       WHERE id = 1`
+    );
+  } else {
+    await pool.query(
+      `UPDATE backcheck_pulse
+       SET consecutive_notif_failures = consecutive_notif_failures + 1,
+           last_notif_failure_at = NOW()
+       WHERE id = 1`
+    );
+  }
+}
+
+// ============================================================================
+// Notification Log — durable record of every outbound notification attempt
+// ============================================================================
+
+export interface NotificationLog {
+  id: number;
+  run_id: string | null;
+  notification_type: string;
+  subject: string | null;
+  success: boolean;
+  error: string | null;
+  platform: string | null;
+  attempted_at: Date;
+}
+
+let notificationLogTableReady = false;
+
+async function ensureNotificationLogTable(): Promise<void> {
+  if (notificationLogTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backcheck_notification_log (
+      id SERIAL PRIMARY KEY,
+      run_id TEXT,
+      notification_type TEXT NOT NULL,
+      subject TEXT,
+      success BOOLEAN NOT NULL,
+      error TEXT,
+      platform TEXT,
+      attempted_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  notificationLogTableReady = true;
+}
+
+export async function logNotification(params: {
+  runId?: string;
+  notificationType: "email" | "webhook";
+  subject?: string;
+  success: boolean;
+  error?: string;
+  platform?: string;
+}): Promise<void> {
+  await ensureNotificationLogTable();
+  await pool.query(
+    `INSERT INTO backcheck_notification_log
+       (run_id, notification_type, subject, success, error, platform, attempted_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+    [
+      params.runId ?? null,
+      params.notificationType,
+      params.subject ?? null,
+      params.success,
+      params.error ?? null,
+      params.platform ?? null,
+    ]
+  );
+  // Update the notification failure streak counter so the dashboard/status can
+  // surface a warning when notifications fail repeatedly.
+  await updateNotificationStreak(params.success).catch(() => {});
+}
+
+export async function getRecentNotifications(limit = 20): Promise<NotificationLog[]> {
+  await ensureNotificationLogTable();
+  const result = await pool.query(
+    `SELECT id, run_id, notification_type, subject, success, error, platform, attempted_at
+     FROM backcheck_notification_log
+     ORDER BY attempted_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows as NotificationLog[];
+}
+
+// ============================================================================
+// Run Log — per-run business-level outcome tracking
+// ============================================================================
+
+export interface RunLog {
+  id: number;
+  run_id: string | null;
+  apps_checked: number;
+  apps_healthy: number;
+  apps_down: number;
+  apps_issues: number;
+  notification_sent: boolean | null;
+  notification_error: string | null;
+  completed_at: Date;
+}
+
+let runLogTableReady = false;
+
+async function ensureRunLogTable(): Promise<void> {
+  if (runLogTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backcheck_run_log (
+      id SERIAL PRIMARY KEY,
+      run_id TEXT,
+      apps_checked INTEGER NOT NULL DEFAULT 0,
+      apps_healthy INTEGER NOT NULL DEFAULT 0,
+      apps_down INTEGER NOT NULL DEFAULT 0,
+      apps_issues INTEGER NOT NULL DEFAULT 0,
+      notification_sent BOOLEAN,
+      notification_error TEXT,
+      completed_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  runLogTableReady = true;
+}
+
+export async function logRunOutcome(params: {
+  runId?: string;
+  appsChecked: number;
+  appsHealthy: number;
+  appsDown: number;
+  appsIssues: number;
+  notificationSent?: boolean;
+  notificationError?: string;
+}): Promise<void> {
+  await ensureRunLogTable();
+  await pool.query(
+    `INSERT INTO backcheck_run_log
+       (run_id, apps_checked, apps_healthy, apps_down, apps_issues,
+        notification_sent, notification_error, completed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+    [
+      params.runId ?? null,
+      params.appsChecked,
+      params.appsHealthy,
+      params.appsDown,
+      params.appsIssues,
+      params.notificationSent ?? null,
+      params.notificationError ?? null,
+    ]
+  );
+}
+
+export async function getRecentRuns(limit = 10): Promise<RunLog[]> {
+  await ensureRunLogTable();
+  const result = await pool.query(
+    `SELECT id, run_id, apps_checked, apps_healthy, apps_down, apps_issues,
+            notification_sent, notification_error, completed_at
+     FROM backcheck_run_log
+     ORDER BY completed_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows as RunLog[];
 }

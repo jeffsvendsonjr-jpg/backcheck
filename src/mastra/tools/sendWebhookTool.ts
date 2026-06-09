@@ -1,5 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
+import pRetry, { AbortError } from "p-retry";
+import { logNotification } from "../../utils/appState";
 
 export const sendWebhookTool = createTool({
   id: "send-webhook-notification",
@@ -32,12 +34,13 @@ export const sendWebhookTool = createTool({
 
     logger?.info(`🔔 [sendWebhookTool] Sending webhook notification: "${context.subject}"`);
 
+    let platform: string = "unknown";
+
     try {
       const parsedUrl = new URL(webhookUrl);
       const hostname = parsedUrl.hostname;
 
       let payload: object;
-      let platform: string;
 
       if (hostname.includes("slack.com") || hostname.includes("hooks.slack.com")) {
         platform = "slack";
@@ -78,27 +81,64 @@ export const sendWebhookTool = createTool({
         };
       }
 
-      const resp = await fetch(webhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      await pRetry(
+        async (_attemptNumber: number) => {
+          const resp = await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
 
-      if (!resp.ok) {
-        const errorText = await resp.text().catch(() => "unknown");
-        logger?.error(`❌ [sendWebhookTool] Webhook returned ${resp.status}: ${errorText}`);
-        return {
-          success: false,
-          platform,
-          error: `Webhook returned HTTP ${resp.status}`,
-        };
-      }
+          if (!resp.ok) {
+            const errorText = await resp.text().catch(() => "unknown");
+            const status = resp.status;
+            // 4xx errors (except 429) are non-retriable
+            if (status >= 400 && status < 500 && status !== 429) {
+              throw new AbortError(`Webhook returned HTTP ${status}: ${errorText}`);
+            }
+            throw new Error(
+              `[sendWebhookTool] Webhook returned ${status}: ${errorText}`
+            );
+          }
+        },
+        {
+          retries: 2,
+          minTimeout: 1000,
+          maxTimeout: 5000,
+          onFailedAttempt: (error: any) => {
+            logger?.warn(
+              `⚠️ [sendWebhookTool] Webhook attempt ${error.attemptNumber}/${error.retriesLeft + error.attemptNumber} failed: ${error.message}`
+            );
+          },
+        }
+      );
 
       logger?.info(`✅ [sendWebhookTool] Webhook notification sent successfully (${platform})`);
+
+      logNotification({
+        notificationType: "webhook",
+        subject: context.subject,
+        success: true,
+        platform,
+      }).catch((e) =>
+        logger?.warn(`⚠️ [sendWebhookTool] Could not record notification log: ${e?.message}`)
+      );
+
       return { success: true, platform };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger?.error(`❌ [sendWebhookTool] Failed to send webhook: ${errorMessage}`);
+
+      logNotification({
+        notificationType: "webhook",
+        subject: context.subject,
+        success: false,
+        error: errorMessage,
+        platform: platform,
+      }).catch((e) =>
+        logger?.warn(`⚠️ [sendWebhookTool] Could not record notification log: ${e?.message}`)
+      );
+
       return {
         success: false,
         error: errorMessage,

@@ -163,6 +163,8 @@ export function getBlockedIpReason(address: string): string | null {
   if (family === 6) {
     if (normalized === "::" || normalized === "::1") return "loopback or unspecified IPv6 address";
     if (normalized.startsWith("::ffff:")) return "IPv4-mapped IPv6 address";
+    if (/^2002:/i.test(normalized)) return "6to4 IPv6 transition range";
+    if (/^2001:(?:0:|:)/i.test(normalized)) return "Teredo IPv6 transition range";
     if (/^fe[89ab][0-9a-f]:/i.test(normalized)) return "link-local IPv6 range";
     if (/^f[cd]/i.test(normalized)) return "unique-local IPv6 range";
     if (/^ff/i.test(normalized)) return "multicast IPv6 range";

@@ -24,6 +24,7 @@ const appResultSchema = z.object({
   sslDaysRemaining: z.number().optional(),
   sslExpiring: z.boolean().optional(),
   contentChanged: z.boolean().optional(),
+  contentReadError: z.string().optional(),
   consecutiveFailures: z.number().optional(),
   consecutiveSlow: z.number().optional(),
 });
@@ -279,6 +280,7 @@ const verifyAppLiveness = createStep({
 
         let contentChanged = false;
         let contentHash: string | undefined;
+        let contentReadError: string | undefined;
         let bodyText = "";
 
         if (isLive) {
@@ -326,7 +328,8 @@ const verifyAppLiveness = createStep({
               }
             }
           } catch (e) {
-            logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for content scan`);
+            contentReadError = e instanceof Error ? e.message : String(e);
+            logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Could not read response body for content scan: ${contentReadError}`);
           }
         }
 
@@ -354,7 +357,7 @@ const verifyAppLiveness = createStep({
           }
         }
 
-        const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0 || isSlow || sslExpiring || contentChanged;
+        const hasIssues = bioticsMissing.length > 0 || warningsFound.length > 0 || isSlow || sslExpiring || contentChanged || !!contentReadError;
 
         const newConsecutiveFailures = (isLive && !hasIssues) ? 0 : (previousState?.consecutive_failures ?? 0) + 1;
 
@@ -385,6 +388,7 @@ const verifyAppLiveness = createStep({
         if (isSlow) statusMsg += `, SLOW RESPONSE (${newConsecutiveSlow} consecutive)`;
         if (sslExpiring) statusMsg += `, SSL EXPIRING (${sslDaysRemaining}d)`;
         if (contentChanged) statusMsg += `, CONTENT CHANGED`;
+        if (contentReadError) statusMsg += `, CONTENT SCAN FAILED`;
         if (attempt > 0) statusMsg += ` (confirmed after retry)`;
         statusMsg += `, failures: ${newConsecutiveFailures}`;
         logger?.info(statusMsg);
@@ -404,6 +408,7 @@ const verifyAppLiveness = createStep({
           sslDaysRemaining,
           sslExpiring,
           contentChanged,
+          contentReadError,
           consecutiveFailures: newConsecutiveFailures,
           consecutiveSlow: newConsecutiveSlow,
         };
@@ -576,6 +581,9 @@ const compileVerificationReport = createStep({
         if (app.contentChanged) {
           parts.push(`page content changed since last check`);
         }
+        if (app.contentReadError) {
+          parts.push(`content scan failed: ${app.contentReadError}`);
+        }
         if (app.consecutiveFailures && app.consecutiveFailures > 1) {
           parts.push(`consecutive issue #${app.consecutiveFailures}`);
         }
@@ -747,6 +755,9 @@ const notifyNonLiveApps = createStep({
       }
       if (app.contentChanged) {
         detail += `\n  ⚠️ Page content has CHANGED since last check — possible accidental deploy, hack, or wrong environment`;
+      }
+      if (app.contentReadError) {
+        detail += `\n  Content scan failed: ${app.contentReadError}`;
       }
       if (app.consecutiveFailures && app.consecutiveFailures > 1) {
         detail += `\n  This is consecutive issue #${app.consecutiveFailures}`;

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "node --test tests/urlSafety.test.ts",
+    "test": "tsx --test tests/urlSafety.test.ts",
     "dev": "mastra dev",
     "build": "mastra build",
     "check": "tsc",

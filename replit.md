@@ -4,6 +4,7 @@
 A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present). Includes SSL certificate expiration checking, retry-before-alert logic, slow response detection, alert-only mode, and email delivery verification.
 
 ## Recent Changes
+- 2026-06-09: Backend reliability improvements — (1) Durable notification log: every email and webhook attempt is recorded in `backcheck_notification_log` with outcome, error, and platform. (2) Per-run outcome log: each workflow run is recorded in `backcheck_run_log` with apps checked/down/issues and whether the notification succeeded. (3) Retry with `p-retry` for transient failures in `sendEmail` (replitmail.ts) and `sendWebhookTool` — up to 2 retries, 4xx responses are non-retriable. (4) `/api/status` JSON endpoint exposing current health, last run, recent notification outcomes, pulse stats, and recent run history — suitable for external synthetic checks. (5) Dashboard now shows "Recent Runs" and "Recent Notifications" tables so silent notification failures are visible without log diving. (6) `runId` is forwarded through the report schema so notification log entries can be correlated to specific runs.
 - 2026-05-03: Production hardening — (1) Optional HTTP Basic Auth on `/dashboard` and `/api/test-failure` via `DASHBOARD_PASSWORD` env var (graceful fallback: no auth required if unset). Username is `backcheck`. (2) Added concurrent-run lock for the workflow using `last_run_started_at`, `last_run_completed_at`, `last_run_id` columns on `backcheck_pulse`. Acquired in `collect-app-pay-urls` step, released in `compile-verification-report`. Stale locks (>50 min) are auto-released. Prevents overlapping cron runs from sending duplicate alerts.
 - 2026-03-01: Added content change dampening — requires 2 consecutive checks with the same new hash before flagging a content change. Eliminates false positives from dynamic pages (A/B tests, rotating content, GitHub homepage, etc.). Uses `pending_content_hash` column in `backcheck_app_state`.
 - 2026-03-01: Improved content normalization — now also strips JSON-LD blocks, dynamic meta tags (og:updated_time, last-modified), SVG elements, noscript blocks, aria-* attributes, and IDs containing hash-like values. Dramatically reduces false "content changed" alerts.
@@ -77,6 +78,25 @@ A time-based automation that monitors published Replit apps for liveness. It per
   - `total_down` (INTEGER) - Downtime incidents since last pulse
   - `week_start` (TIMESTAMP) - Start of current tracking period
   - `last_pulse_sent` (TIMESTAMP) - When last pulse email was sent
+- **Table**: `backcheck_notification_log` - Durable record of every outbound notification attempt (auto-created on first use)
+  - `id` (SERIAL, PK)
+  - `run_id` (TEXT) - Correlates to the workflow run that triggered this notification
+  - `notification_type` (TEXT) - "email" or "webhook"
+  - `subject` (TEXT) - Notification subject/title
+  - `success` (BOOLEAN) - Whether the delivery succeeded
+  - `error` (TEXT) - Error message if delivery failed
+  - `platform` (TEXT) - For webhooks: "slack", "discord", or "generic"
+  - `attempted_at` (TIMESTAMPTZ) - When the attempt was made
+- **Table**: `backcheck_run_log` - Per-run business-level outcome record (auto-created on first use)
+  - `id` (SERIAL, PK)
+  - `run_id` (TEXT) - Matches the run lock ID from `backcheck_pulse`
+  - `apps_checked` (INTEGER) - Total apps checked in the run
+  - `apps_healthy` (INTEGER) - Apps with healthy status
+  - `apps_down` (INTEGER) - Apps that were unreachable
+  - `apps_issues` (INTEGER) - Apps with content/SSL/slow issues
+  - `notification_sent` (BOOLEAN) - Whether the notification was successfully delivered
+  - `notification_error` (TEXT) - Reason for notification failure if applicable
+  - `completed_at` (TIMESTAMPTZ) - When the run completed
 
 ### Environment Variables
 - `APP_URLS` - Comma-separated list of URLs to monitor. Format: `Name|URL|signals`, `Name|URL`, or just `URL`. Signals use semicolons to separate multiple entries. Prefix with `+` for biotics (healthy signals that SHOULD be present) or `-` for warnings (bad signals that SHOULD NOT be present). Unprefixed words default to warnings. Example: `My App|https://myapp.replit.app|+welcome;+operational;-error;-maintenance`

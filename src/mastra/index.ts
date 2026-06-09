@@ -184,6 +184,87 @@ export const mastra = new Mastra({
         },
       },
       {
+        path: "/api/status",
+        method: "GET",
+        handler: async (c: any) => {
+          try {
+            const { getRecentRuns, getRecentNotifications, getPulseState } = await import("../utils/appState");
+            const [recentRuns, recentNotifications, pulseState] = await Promise.all([
+              getRecentRuns(10).catch(() => []),
+              getRecentNotifications(10).catch(() => []),
+              getPulseState().catch(() => null),
+            ]);
+
+            const appUrlsRaw = process.env.APP_URLS || "";
+            const monitoredCount = appUrlsRaw
+              ? appUrlsRaw.split(",").map((e: string) => e.trim()).filter(Boolean).length
+              : 0;
+
+            const lastRun = recentRuns[0] ?? null;
+            const notificationFailures = recentNotifications.filter((n: any) => !n.success).length;
+            const notificationSuccesses = recentNotifications.filter((n: any) => n.success).length;
+
+            return c.json({
+              status: "ok",
+              generatedAt: new Date().toISOString(),
+              monitoring: {
+                appsConfigured: monitoredCount,
+                schedule: process.env.SCHEDULE_CRON_EXPRESSION || "0 * * * *",
+                notifyMode: process.env.NOTIFY_MODE || "all",
+              },
+              lastRun: lastRun
+                ? {
+                    runId: lastRun.run_id,
+                    completedAt: new Date(lastRun.completed_at).toISOString(),
+                    appsChecked: lastRun.apps_checked,
+                    appsHealthy: lastRun.apps_healthy,
+                    appsDown: lastRun.apps_down,
+                    appsIssues: lastRun.apps_issues,
+                    notificationSent: lastRun.notification_sent,
+                    notificationError: lastRun.notification_error,
+                  }
+                : null,
+              notifications: {
+                recentAttempts: recentNotifications.length,
+                recentSuccesses: notificationSuccesses,
+                recentFailures: notificationFailures,
+                last10: recentNotifications.map((n: any) => ({
+                  type: n.notification_type,
+                  subject: n.subject,
+                  success: n.success,
+                  error: n.error,
+                  platform: n.platform,
+                  attemptedAt: new Date(n.attempted_at).toISOString(),
+                })),
+              },
+              pulse: pulseState
+                ? {
+                    totalChecks: pulseState.total_checks,
+                    totalIssues: pulseState.total_issues,
+                    totalDown: pulseState.total_down,
+                    weekStart: pulseState.week_start ? new Date(pulseState.week_start).toISOString() : null,
+                    lastPulseSent: pulseState.last_pulse_sent ? new Date(pulseState.last_pulse_sent).toISOString() : null,
+                  }
+                : null,
+              recentRuns: recentRuns.map((r: any) => ({
+                runId: r.run_id,
+                completedAt: new Date(r.completed_at).toISOString(),
+                appsChecked: r.apps_checked,
+                appsDown: r.apps_down,
+                appsIssues: r.apps_issues,
+                notificationSent: r.notification_sent,
+                notificationError: r.notification_error,
+              })),
+            });
+          } catch (error: any) {
+            return c.json(
+              { status: "error", error: error?.message || "Failed to query status", generatedAt: new Date().toISOString() },
+              500
+            );
+          }
+        },
+      },
+      {
         path: "/api/chat",
         method: "POST",
         createHandler: async ({ mastra }: any) => {

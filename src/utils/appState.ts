@@ -147,3 +147,149 @@ export async function releaseRunLock(runId: string): Promise<void> {
     [runId]
   );
 }
+
+// ============================================================================
+// Notification Log — durable record of every outbound notification attempt
+// ============================================================================
+
+export interface NotificationLog {
+  id: number;
+  run_id: string | null;
+  notification_type: string;
+  subject: string | null;
+  success: boolean;
+  error: string | null;
+  platform: string | null;
+  attempted_at: Date;
+}
+
+let notificationLogTableReady = false;
+
+async function ensureNotificationLogTable(): Promise<void> {
+  if (notificationLogTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backcheck_notification_log (
+      id SERIAL PRIMARY KEY,
+      run_id TEXT,
+      notification_type TEXT NOT NULL,
+      subject TEXT,
+      success BOOLEAN NOT NULL,
+      error TEXT,
+      platform TEXT,
+      attempted_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  notificationLogTableReady = true;
+}
+
+export async function logNotification(params: {
+  runId?: string;
+  notificationType: "email" | "webhook";
+  subject?: string;
+  success: boolean;
+  error?: string;
+  platform?: string;
+}): Promise<void> {
+  await ensureNotificationLogTable();
+  await pool.query(
+    `INSERT INTO backcheck_notification_log
+       (run_id, notification_type, subject, success, error, platform, attempted_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+    [
+      params.runId ?? null,
+      params.notificationType,
+      params.subject ?? null,
+      params.success,
+      params.error ?? null,
+      params.platform ?? null,
+    ]
+  );
+}
+
+export async function getRecentNotifications(limit = 20): Promise<NotificationLog[]> {
+  await ensureNotificationLogTable();
+  const result = await pool.query(
+    `SELECT id, run_id, notification_type, subject, success, error, platform, attempted_at
+     FROM backcheck_notification_log
+     ORDER BY attempted_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows as NotificationLog[];
+}
+
+// ============================================================================
+// Run Log — per-run business-level outcome tracking
+// ============================================================================
+
+export interface RunLog {
+  id: number;
+  run_id: string | null;
+  apps_checked: number;
+  apps_healthy: number;
+  apps_down: number;
+  apps_issues: number;
+  notification_sent: boolean | null;
+  notification_error: string | null;
+  completed_at: Date;
+}
+
+let runLogTableReady = false;
+
+async function ensureRunLogTable(): Promise<void> {
+  if (runLogTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backcheck_run_log (
+      id SERIAL PRIMARY KEY,
+      run_id TEXT,
+      apps_checked INTEGER NOT NULL DEFAULT 0,
+      apps_healthy INTEGER NOT NULL DEFAULT 0,
+      apps_down INTEGER NOT NULL DEFAULT 0,
+      apps_issues INTEGER NOT NULL DEFAULT 0,
+      notification_sent BOOLEAN,
+      notification_error TEXT,
+      completed_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  runLogTableReady = true;
+}
+
+export async function logRunOutcome(params: {
+  runId?: string;
+  appsChecked: number;
+  appsHealthy: number;
+  appsDown: number;
+  appsIssues: number;
+  notificationSent?: boolean;
+  notificationError?: string;
+}): Promise<void> {
+  await ensureRunLogTable();
+  await pool.query(
+    `INSERT INTO backcheck_run_log
+       (run_id, apps_checked, apps_healthy, apps_down, apps_issues,
+        notification_sent, notification_error, completed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+    [
+      params.runId ?? null,
+      params.appsChecked,
+      params.appsHealthy,
+      params.appsDown,
+      params.appsIssues,
+      params.notificationSent ?? null,
+      params.notificationError ?? null,
+    ]
+  );
+}
+
+export async function getRecentRuns(limit = 10): Promise<RunLog[]> {
+  await ensureRunLogTable();
+  const result = await pool.query(
+    `SELECT id, run_id, apps_checked, apps_healthy, apps_down, apps_issues,
+            notification_sent, notification_error, completed_at
+     FROM backcheck_run_log
+     ORDER BY completed_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows as RunLog[];
+}

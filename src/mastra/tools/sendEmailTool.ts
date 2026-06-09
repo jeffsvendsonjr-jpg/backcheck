@@ -1,6 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { sendEmail, zSmtpMessage, type SmtpMessage } from "../../utils/replitmail";
+import { logNotification } from "../../utils/appState";
 
 export const sendEmailTool = createTool({
   id: "send-email-notification",
@@ -38,6 +39,14 @@ export const sendEmailTool = createTool({
         `✅ [sendEmailTool] Email sent successfully. MessageId: ${result.messageId}`
       );
 
+      logNotification({
+        notificationType: "email",
+        subject: context.subject,
+        success: true,
+      }).catch((e) =>
+        logger?.warn(`⚠️ [sendEmailTool] Could not record notification log: ${e?.message}`)
+      );
+
       return {
         success: true,
         messageId: result.messageId,
@@ -46,6 +55,15 @@ export const sendEmailTool = createTool({
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       logger?.error(`❌ [sendEmailTool] Failed to send email: ${errorMessage}`);
+
+      logNotification({
+        notificationType: "email",
+        subject: context.subject,
+        success: false,
+        error: errorMessage,
+      }).catch((e) =>
+        logger?.warn(`⚠️ [sendEmailTool] Could not record notification log: ${e?.message}`)
+      );
 
       return {
         success: false,

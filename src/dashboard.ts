@@ -8,6 +8,8 @@ const pool = new Pool({
 async function getDashboardData() {
   let apps: any[] = [];
   let pulse = { total_checks: 0, total_issues: 0, total_down: 0, week_start: null as any, last_pulse_sent: null as any };
+  let recentRuns: any[] = [];
+  let recentNotifications: any[] = [];
 
   try {
     const appResult = await pool.query(
@@ -24,6 +26,27 @@ async function getDashboardData() {
     if (pulseResult.rows.length > 0) pulse = pulseResult.rows[0];
   } catch (e) {}
 
+  try {
+    const runsResult = await pool.query(
+      `SELECT run_id, apps_checked, apps_healthy, apps_down, apps_issues,
+              notification_sent, notification_error, completed_at
+       FROM backcheck_run_log
+       ORDER BY completed_at DESC
+       LIMIT 5`
+    );
+    recentRuns = runsResult.rows;
+  } catch (e) {}
+
+  try {
+    const notifResult = await pool.query(
+      `SELECT notification_type, subject, success, error, platform, attempted_at
+       FROM backcheck_notification_log
+       ORDER BY attempted_at DESC
+       LIMIT 5`
+    );
+    recentNotifications = notifResult.rows;
+  } catch (e) {}
+
   const appUrlsRaw = process.env.APP_URLS || "";
   const configuredUrls = appUrlsRaw
     .split(",")
@@ -37,7 +60,7 @@ async function getDashboardData() {
       return { name, url, signals };
     });
 
-  return { apps, pulse, configuredUrls, schedule: process.env.SCHEDULE_CRON_EXPRESSION || "0 * * * *", notifyMode: process.env.NOTIFY_MODE || "all" };
+  return { apps, pulse, configuredUrls, schedule: process.env.SCHEDULE_CRON_EXPRESSION || "0 * * * *", notifyMode: process.env.NOTIFY_MODE || "all", recentRuns, recentNotifications };
 }
 
 function formatRelativeTime(date: Date | null): string {
@@ -53,7 +76,7 @@ function formatRelativeTime(date: Date | null): string {
 }
 
 export async function getDashboardHtml(): Promise<string> {
-  const { apps, pulse, configuredUrls, schedule, notifyMode } = await getDashboardData();
+  const { apps, pulse, configuredUrls, schedule, notifyMode, recentRuns, recentNotifications } = await getDashboardData();
 
   const mergedApps = configuredUrls.map((configured) => {
     const state = apps.find((a) => a.url === configured.url);
@@ -97,6 +120,51 @@ export async function getDashboardHtml(): Promise<string> {
           <td><span class="time-cell">${formatRelativeTime(updatedAt)}</span></td>
           <td>${badges.length ? badges.join(" ") : '<span style="color:var(--muted);font-size:13px;">—</span>'}</td>
           <td><a href="${app.url}" target="_blank" class="visit-btn">Visit ↗</a></td>
+        </tr>`;
+      }).join("");
+
+  // Build recent runs rows
+  const recentRunsRows = recentRuns.length === 0
+    ? `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">No runs recorded yet — the workflow hasn't completed a full cycle.</td></tr>`
+    : recentRuns.map((run: any) => {
+        const completedAt = run.completed_at ? new Date(run.completed_at) : null;
+        const notifIcon = run.notification_sent === true
+          ? `<span style="color:var(--accent)">✓ sent</span>`
+          : run.notification_sent === false && run.notification_error
+          ? `<span style="color:var(--red)" title="${run.notification_error}">✗ failed</span>`
+          : run.notification_sent === false
+          ? `<span style="color:var(--muted)">— skipped</span>`
+          : `<span style="color:var(--muted)">—</span>`;
+        const issuesBadge = run.apps_down > 0
+          ? `<span class="badge badge-red">${run.apps_down} down</span>`
+          : run.apps_issues > 0
+          ? `<span class="badge badge-amber">${run.apps_issues} issues</span>`
+          : `<span style="color:var(--accent);font-size:12px;">all healthy</span>`;
+        return `<tr>
+          <td><span class="time-cell">${formatRelativeTime(completedAt)}</span></td>
+          <td style="font-size:13px;">${run.apps_checked}</td>
+          <td>${issuesBadge}</td>
+          <td>${notifIcon}</td>
+          <td style="font-size:11px;color:var(--muted);font-family:monospace;">${run.run_id ? run.run_id.slice(0, 16) + "…" : "—"}</td>
+        </tr>`;
+      }).join("");
+
+  // Build recent notifications rows
+  const recentNotifsRows = recentNotifications.length === 0
+    ? `<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">No notifications recorded yet.</td></tr>`
+    : recentNotifications.map((n: any) => {
+        const attemptedAt = n.attempted_at ? new Date(n.attempted_at) : null;
+        const typeLabel = n.notification_type === "email"
+          ? `<span style="font-size:12px;">📧 Email</span>`
+          : `<span style="font-size:12px;">🔔 Webhook${n.platform ? ` (${n.platform})` : ""}</span>`;
+        const statusLabel = n.success
+          ? `<span style="color:var(--accent)">✓ sent</span>`
+          : `<span style="color:var(--red)" title="${n.error || "unknown error"}">✗ failed</span>`;
+        return `<tr>
+          <td><span class="time-cell">${formatRelativeTime(attemptedAt)}</span></td>
+          <td>${typeLabel}</td>
+          <td style="font-size:12px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${n.subject || ""}">${n.subject || "—"}</td>
+          <td>${statusLabel}</td>
         </tr>`;
       }).join("");
 
@@ -303,6 +371,47 @@ export async function getDashboardHtml(): Promise<string> {
     <div class="test-desc">Hit the button below to simulate a down app. Backcheck will detect it, and an alert email will be sent to the configured address. This proves the monitoring pipeline works end-to-end.</div>
     <button class="test-btn" onclick="triggerTest(this)">Trigger a test failure →</button>
     <div class="test-result" id="testResult"></div>
+  </div>
+
+  <div class="table-card">
+    <div class="table-header">
+      <div class="table-title">Recent Runs</div>
+      <div class="table-count">${recentRuns.length} shown</div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Completed</th>
+          <th>Checked</th>
+          <th>Outcome</th>
+          <th>Notification</th>
+          <th>Run ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${recentRunsRows}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="table-card">
+    <div class="table-header">
+      <div class="table-title">Recent Notifications</div>
+      <div class="table-count">${recentNotifications.length} shown</div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Sent</th>
+          <th>Channel</th>
+          <th>Subject</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${recentNotifsRows}
+      </tbody>
+    </table>
   </div>
 </div>
 

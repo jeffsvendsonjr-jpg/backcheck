@@ -5,9 +5,26 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || "postgresql://localhost:5432/mastra",
 });
 
+function escHtml(str: string | null | undefined): string {
+  if (!str) return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
 async function getDashboardData() {
   let apps: any[] = [];
-  let pulse = { total_checks: 0, total_issues: 0, total_down: 0, week_start: null as any, last_pulse_sent: null as any };
+  let pulse = {
+    total_checks: 0,
+    total_issues: 0,
+    total_down: 0,
+    week_start: null as any,
+    last_pulse_sent: null as any,
+    consecutive_notif_failures: 0,
+  };
   let recentRuns: any[] = [];
   let recentNotifications: any[] = [];
 
@@ -21,7 +38,9 @@ async function getDashboardData() {
 
   try {
     const pulseResult = await pool.query(
-      `SELECT total_checks, total_issues, total_down, week_start, last_pulse_sent FROM backcheck_pulse WHERE id = 1`
+      `SELECT total_checks, total_issues, total_down, week_start, last_pulse_sent,
+              COALESCE(consecutive_notif_failures, 0) AS consecutive_notif_failures
+       FROM backcheck_pulse WHERE id = 1`
     );
     if (pulseResult.rows.length > 0) pulse = pulseResult.rows[0];
   } catch (e) {}
@@ -89,6 +108,7 @@ export async function getDashboardHtml(): Promise<string> {
   const uncheckedCount = mergedApps.filter(a => !a.state).length;
 
   const overallStatus = downCount > 0 ? "down" : issueCount > 0 ? "issues" : mergedApps.length === 0 ? "empty" : "healthy";
+  const consecutiveNotifFailures: number = pulse.consecutive_notif_failures ?? 0;
 
   const appRows = mergedApps.length === 0
     ? `<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--muted);">No apps configured yet — set the <code style="color:var(--accent)">APP_URLS</code> environment variable to start monitoring.</td></tr>`
@@ -112,14 +132,14 @@ export async function getDashboardHtml(): Promise<string> {
 
         return `<tr>
           <td>
-            <div class="app-name">${app.name}</div>
-            <div class="app-url"><a href="${app.url}" target="_blank" rel="noopener">${app.url}</a></div>
-            ${app.signals ? `<div class="app-signals">${app.signals}</div>` : ""}
+            <div class="app-name">${escHtml(app.name)}</div>
+            <div class="app-url"><a href="${escHtml(app.url)}" target="_blank" rel="noopener">${escHtml(app.url)}</a></div>
+            ${app.signals ? `<div class="app-signals">${escHtml(app.signals)}</div>` : ""}
           </td>
           <td><div class="status-cell">${statusDot}</div></td>
           <td><span class="time-cell">${formatRelativeTime(updatedAt)}</span></td>
           <td>${badges.length ? badges.join(" ") : '<span style="color:var(--muted);font-size:13px;">—</span>'}</td>
-          <td><a href="${app.url}" target="_blank" class="visit-btn">Visit ↗</a></td>
+          <td><a href="${escHtml(app.url)}" target="_blank" class="visit-btn">Visit ↗</a></td>
         </tr>`;
       }).join("");
 
@@ -131,7 +151,7 @@ export async function getDashboardHtml(): Promise<string> {
         const notifIcon = run.notification_sent === true
           ? `<span style="color:var(--accent)">✓ sent</span>`
           : run.notification_sent === false && run.notification_error
-          ? `<span style="color:var(--red)" title="${run.notification_error}">✗ failed</span>`
+          ? `<span style="color:var(--red)" title="${escHtml(run.notification_error)}">✗ failed</span>`
           : run.notification_sent === false
           ? `<span style="color:var(--muted)">— skipped</span>`
           : `<span style="color:var(--muted)">—</span>`;
@@ -145,7 +165,7 @@ export async function getDashboardHtml(): Promise<string> {
           <td style="font-size:13px;">${run.apps_checked}</td>
           <td>${issuesBadge}</td>
           <td>${notifIcon}</td>
-          <td style="font-size:11px;color:var(--muted);font-family:monospace;">${run.run_id ? run.run_id.slice(0, 16) + "…" : "—"}</td>
+          <td style="font-size:11px;color:var(--muted);font-family:monospace;">${run.run_id ? escHtml(run.run_id.slice(0, 16)) + "…" : "—"}</td>
         </tr>`;
       }).join("");
 
@@ -156,14 +176,14 @@ export async function getDashboardHtml(): Promise<string> {
         const attemptedAt = n.attempted_at ? new Date(n.attempted_at) : null;
         const typeLabel = n.notification_type === "email"
           ? `<span style="font-size:12px;">📧 Email</span>`
-          : `<span style="font-size:12px;">🔔 Webhook${n.platform ? ` (${n.platform})` : ""}</span>`;
+          : `<span style="font-size:12px;">🔔 Webhook${n.platform ? ` (${escHtml(n.platform)})` : ""}</span>`;
         const statusLabel = n.success
           ? `<span style="color:var(--accent)">✓ sent</span>`
-          : `<span style="color:var(--red)" title="${n.error || "unknown error"}">✗ failed</span>`;
+          : `<span style="color:var(--red)" title="${escHtml(n.error) || "unknown error"}">✗ failed</span>`;
         return `<tr>
           <td><span class="time-cell">${formatRelativeTime(attemptedAt)}</span></td>
           <td>${typeLabel}</td>
-          <td style="font-size:12px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${n.subject || ""}">${n.subject || "—"}</td>
+          <td style="font-size:12px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(n.subject)}">${escHtml(n.subject) || "—"}</td>
           <td>${statusLabel}</td>
         </tr>`;
       }).join("");
@@ -175,6 +195,10 @@ export async function getDashboardHtml(): Promise<string> {
     : overallStatus === "issues"
     ? `<div class="banner banner-amber"><span class="banner-dot"></span>${issueCount} app${issueCount !== 1 ? "s" : ""} with issues</div>`
     : `<div class="banner banner-gray"><span class="banner-dot"></span>No apps configured</div>`;
+
+  const notifStreakWarning = consecutiveNotifFailures >= 3
+    ? `<div class="banner banner-amber" style="margin-bottom:16px;"><span class="banner-dot"></span>⚠ Notification delivery has failed ${consecutiveNotifFailures} time${consecutiveNotifFailures !== 1 ? "s" : ""} in a row — check your email/webhook configuration.</div>`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="en">

@@ -187,6 +187,23 @@ export const mastra = new Mastra({
         path: "/api/status",
         method: "GET",
         handler: async (c: any) => {
+          // Optional token-based authentication.
+          // Set STATUS_TOKEN env var to restrict access to this endpoint.
+          const statusToken = process.env.STATUS_TOKEN;
+          if (statusToken) {
+            const providedToken =
+              c.req.query("token") ||
+              (c.req.header("authorization") || "").replace(/^Bearer\s+/i, "");
+            const crypto = await import("node:crypto");
+            const a = Buffer.from(providedToken);
+            const b = Buffer.from(statusToken);
+            const matches =
+              a.length === b.length && crypto.timingSafeEqual(a, b);
+            if (!matches) {
+              return c.json({ status: "unauthorized", error: "Invalid or missing token" }, 401);
+            }
+          }
+
           try {
             const { getRecentRuns, getRecentNotifications, getPulseState } = await import("../utils/appState");
             const [recentRuns, recentNotifications, pulseState] = await Promise.all([
@@ -203,6 +220,8 @@ export const mastra = new Mastra({
             const lastRun = recentRuns[0] ?? null;
             const notificationFailures = recentNotifications.filter((n: any) => !n.success).length;
             const notificationSuccesses = recentNotifications.filter((n: any) => n.success).length;
+
+            const consecutiveNotifFailures = pulseState?.consecutive_notif_failures ?? 0;
 
             return c.json({
               status: "ok",
@@ -228,6 +247,8 @@ export const mastra = new Mastra({
                 recentAttempts: recentNotifications.length,
                 recentSuccesses: notificationSuccesses,
                 recentFailures: notificationFailures,
+                consecutiveFailures: consecutiveNotifFailures,
+                streakWarning: consecutiveNotifFailures >= 3,
                 last10: recentNotifications.map((n: any) => ({
                   type: n.notification_type,
                   subject: n.subject,

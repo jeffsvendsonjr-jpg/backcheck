@@ -112,3 +112,38 @@ export async function isPulseDue(): Promise<boolean> {
   const daysSinceLastPulse = (Date.now() - new Date(state.last_pulse_sent).getTime()) / (1000 * 60 * 60 * 24);
   return daysSinceLastPulse >= 7;
 }
+
+const RUN_LOCK_STALE_MINUTES = 10;
+
+export async function tryAcquireRunLock(runId: string): Promise<boolean> {
+  await pool.query(
+    `INSERT INTO backcheck_pulse (id, total_checks, total_issues, total_down, week_start, last_pulse_sent)
+     VALUES (1, 0, 0, 0, NOW(), NOW())
+     ON CONFLICT (id) DO NOTHING`
+  );
+
+  const result = await pool.query(
+    `UPDATE backcheck_pulse
+     SET last_run_started_at = NOW(),
+         last_run_completed_at = NULL,
+         last_run_id = $1
+     WHERE id = 1
+       AND (
+         last_run_started_at IS NULL
+         OR last_run_completed_at IS NOT NULL
+         OR last_run_started_at < NOW() - INTERVAL '${RUN_LOCK_STALE_MINUTES} minutes'
+       )
+     RETURNING last_run_id`,
+    [runId]
+  );
+  return result.rowCount !== null && result.rowCount > 0;
+}
+
+export async function releaseRunLock(runId: string): Promise<void> {
+  await pool.query(
+    `UPDATE backcheck_pulse
+     SET last_run_completed_at = NOW()
+     WHERE id = 1 AND last_run_id = $1`,
+    [runId]
+  );
+}

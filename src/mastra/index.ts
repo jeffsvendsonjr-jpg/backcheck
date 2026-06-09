@@ -90,6 +90,26 @@ export const mastra = new Mastra({
         await next();
       },
       async (c, next) => {
+        const url = new URL(c.req.url);
+        const protectedPaths = ["/dashboard", "/api/test-failure"];
+        const requiresAuth = protectedPaths.some((p) => url.pathname === p || url.pathname.startsWith(p + "/"));
+        const password = process.env.DASHBOARD_PASSWORD;
+        if (requiresAuth && password) {
+          const authHeader = c.req.header("authorization") || "";
+          const expected = "Basic " + Buffer.from(`backcheck:${password}`).toString("base64");
+          const crypto = await import("node:crypto");
+          const a = Buffer.from(authHeader);
+          const b = Buffer.from(expected);
+          const matches = a.length === b.length && crypto.timingSafeEqual(a, b);
+          if (!matches) {
+            return c.body("Authentication required", 401, {
+              "WWW-Authenticate": 'Basic realm="Backcheck Dashboard"',
+            });
+          }
+        }
+        await next();
+      },
+      async (c, next) => {
         const mastra = c.get("mastra");
         const logger = mastra?.getLogger();
         logger?.debug("[Request]", { method: c.req.method, url: c.req.url });
@@ -133,6 +153,34 @@ export const mastra = new Mastra({
         handler: async (c: any) => {
           const { getHomepageHtml } = await import("../homepage");
           return c.html(getHomepageHtml());
+        },
+      },
+      {
+        path: "/dashboard",
+        method: "GET",
+        handler: async (c: any) => {
+          const { getDashboardHtml } = await import("../dashboard");
+          return c.html(await getDashboardHtml());
+        },
+      },
+      {
+        path: "/api/test-failure",
+        method: "POST",
+        createHandler: async ({ mastra }: any) => {
+          return async (c: any) => {
+            const logger = mastra?.getLogger();
+            logger?.info("🧪 [testFailure] Demo test-failure endpoint triggered");
+            try {
+              const { monitorWorkflow } = await import("./workflows/monitorWorkflow");
+              const run = await mastra.getWorkflow("monitorWorkflow").createRunAsync();
+              run.start({ inputData: {} });
+              logger?.info("🧪 [testFailure] Demo workflow run started");
+              return c.json({ success: true, message: "Test triggered. Backcheck is running a check now — check your email in ~30 seconds." });
+            } catch (error: any) {
+              logger?.error("🧪 [testFailure] Error", { error: error?.message });
+              return c.json({ success: false, error: error?.message || "Failed to trigger test" }, 500);
+            }
+          };
         },
       },
       {

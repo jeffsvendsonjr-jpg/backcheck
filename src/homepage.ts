@@ -544,9 +544,12 @@ export function getHomepageHtml(): string {
   <nav>
     <div class="container">
       <div class="logo">back<span>check</span></div>
-      <div class="nav-status">
-        <div class="pulse-dot"></div>
-        Monitoring
+      <div class="nav-right" style="display:flex;align-items:center;gap:20px;">
+        <a href="/dashboard" style="font-size:13px;color:var(--text-muted);text-decoration:none;transition:color 0.2s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-muted)'">Dashboard →</a>
+        <div class="nav-status">
+          <div class="pulse-dot"></div>
+          Monitoring
+        </div>
       </div>
     </div>
   </nav>

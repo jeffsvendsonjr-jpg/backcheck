@@ -4,6 +4,7 @@
 A time-based automation that monitors published Replit apps for liveness. It periodically checks configured URLs, compiles a status report, and sends email notifications when apps go down or confirms all apps are healthy. Supports dual content scanning: "biotics" (healthy signals that should be present) and "warnings" (bad signals that should not be present). Includes SSL certificate expiration checking, retry-before-alert logic, slow response detection, alert-only mode, and email delivery verification.
 
 ## Recent Changes
+- 2026-05-03: Production hardening — (1) Optional HTTP Basic Auth on `/dashboard` and `/api/test-failure` via `DASHBOARD_PASSWORD` env var (graceful fallback: no auth required if unset). Username is `backcheck`. (2) Added concurrent-run lock for the workflow using `last_run_started_at`, `last_run_completed_at`, `last_run_id` columns on `backcheck_pulse`. Acquired in `collect-app-pay-urls` step, released in `compile-verification-report`. Stale locks (>50 min) are auto-released. Prevents overlapping cron runs from sending duplicate alerts.
 - 2026-03-01: Added content change dampening — requires 2 consecutive checks with the same new hash before flagging a content change. Eliminates false positives from dynamic pages (A/B tests, rotating content, GitHub homepage, etc.). Uses `pending_content_hash` column in `backcheck_app_state`.
 - 2026-03-01: Improved content normalization — now also strips JSON-LD blocks, dynamic meta tags (og:updated_time, last-modified), SVG elements, noscript blocks, aria-* attributes, and IDs containing hash-like values. Dramatically reduces false "content changed" alerts.
 - 2026-03-01: Cleared test URLs from APP_URLS (Google, GitHub, Fake Down App) to stop hourly alert email flood.
@@ -83,6 +84,7 @@ A time-based automation that monitors published Replit apps for liveness. It per
 - `NOTIFY_MODE` - Set to `alert-only` to only receive emails when something is wrong. Default: `all` (sends both alerts and healthy confirmations)
 - `SSL_WARN_DAYS` - Days before SSL certificate expiry to start warning (default: `14`)
 - `WEBHOOK_URL` - Optional webhook endpoint for notifications. Supports Slack incoming webhooks, Discord webhooks, or any generic HTTP endpoint. When set, the agent sends webhook notifications alongside email.
+- `DASHBOARD_PASSWORD` - Optional. When set, `/dashboard` and `/api/test-failure` require HTTP Basic Auth with username `backcheck` and this password. If unset, both endpoints are public (graceful fallback for local dev).
 
 ### Monitoring Features
 - **Content normalization**: Before hashing, strips scripts, styles, HTML comments, CSRF tokens, nonces, timestamps, Unix epochs, long hex strings, data attributes, JSON-LD blocks, dynamic meta tags (og:updated_time, last-modified), SVG elements, noscript blocks, aria-* attributes, and IDs containing hash-like values. Reduces false positives on dynamic pages.

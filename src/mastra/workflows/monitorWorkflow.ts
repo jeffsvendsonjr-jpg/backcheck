@@ -4,6 +4,7 @@ import * as tls from "node:tls";
 import * as crypto from "node:crypto";
 import { monitorAgent } from "../agents/monitorAgent";
 import { getAppState, updateAppState, incrementPulseCounters, isPulseDue, getPulseState, resetPulseCounters } from "../../utils/appState";
+import { isUrlSafetyError, readResponseTextCapped, safeFetchUrl, validateMonitorUrl } from "../../utils/urlSafety";
 
 const appResultSchema = z.object({
   url: z.string(),
@@ -120,12 +121,15 @@ const collectAppUrls = createStep({
           }
         }
 
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-          logger?.error(`❌ [collectAppUrls] Skipping entry with invalid URL (must start with http:// or https://): "${url}"`);
+        let validatedUrl: string;
+        try {
+          validatedUrl = (await validateMonitorUrl(url)).url;
+        } catch (e) {
+          logger?.error(`❌ [collectAppUrls] Skipping unsafe monitor URL "${url}": ${e instanceof Error ? e.message : String(e)}`);
           continue;
         }
 
-        const result: { name: string; url: string; biotics?: string[]; warnings?: string[] } = { name, url };
+        const result: { name: string; url: string; biotics?: string[]; warnings?: string[] } = { name, url: validatedUrl };
         if (biotics.length > 0) result.biotics = biotics;
         if (warnings.length > 0) result.warnings = warnings;
         apps.push(result);
@@ -185,19 +189,13 @@ const verifyAppLiveness = createStep({
     }
 
     async function attemptFetch(): Promise<{ resp: Response; responseTimeMs: number }> {
-      const startTime = Date.now();
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const resp = await fetch(inputData.url, {
+      const { response, responseTimeMs } = await safeFetchUrl(inputData.url, {
         method: "GET",
-        signal: controller.signal,
-        redirect: "follow",
         headers: { "User-Agent": "Backcheck/1.0" },
+        timeoutMs: 15000,
       });
 
-      clearTimeout(timeout);
-      return { resp, responseTimeMs: Date.now() - startTime };
+      return { resp: response, responseTimeMs };
     }
 
     async function checkSslCert(urlStr: string): Promise<{ daysRemaining: number; expiring: boolean } | null> {
@@ -205,11 +203,13 @@ const verifyAppLiveness = createStep({
         const parsed = new URL(urlStr);
         if (parsed.protocol !== "https:") return null;
 
-        const hostname = parsed.hostname;
+        const validatedUrl = await validateMonitorUrl(urlStr);
+        const hostname = validatedUrl.hostname;
+        const connectHost = validatedUrl.addresses[0] ?? hostname;
         const port = parseInt(parsed.port) || 443;
 
         return await new Promise((resolve) => {
-          const socket = tls.connect({ host: hostname, port, servername: hostname, timeout: 5000 }, () => {
+          const socket = tls.connect({ host: connectHost, port, servername: hostname, timeout: 5000 }, () => {
             const cert = socket.getPeerCertificate();
             socket.destroy();
 
@@ -271,7 +271,7 @@ const verifyAppLiveness = createStep({
 
         if (isLive) {
           try {
-            bodyText = await resp.text();
+            bodyText = await readResponseTextCapped(resp);
             const bodyLower = bodyText.toLowerCase();
 
             const normalizedBody = normalizeContentForHashing(bodyText);
@@ -398,8 +398,9 @@ const verifyAppLiveness = createStep({
       } catch (error) {
         lastResponseTimeMs = Date.now() - attemptStartTime;
         lastError = error instanceof Error ? error.message : String(error);
+        const isHardSafetyReject = isUrlSafetyError(error) && error.code !== "URL_DNS_LOOKUP_FAILED" && error.code !== "URL_TIMEOUT";
 
-        if (attempt < MAX_RETRIES) {
+        if (attempt < MAX_RETRIES && !isHardSafetyReject) {
           logger?.warn(`⚠️ [verifyAppLiveness] ${inputData.name}: Request failed (${lastError}), will retry to confirm...`);
           continue;
         }

@@ -138,8 +138,13 @@ const collectAppUrls = createStep({
         try {
           validatedUrl = (await validateMonitorUrl(url)).url;
         } catch (e) {
-          logger?.error(`❌ [collectAppUrls] Skipping unsafe monitor URL "${url}": ${e instanceof Error ? e.message : String(e)}`);
-          continue;
+          if (isUrlSafetyError(e) && e.code === "URL_DNS_LOOKUP_FAILED") {
+            logger?.warn(`⚠️ [collectAppUrls] DNS lookup failed for "${url}" — passing to liveness check for retry: ${e.message}`);
+            validatedUrl = url;
+          } else {
+            logger?.error(`❌ [collectAppUrls] Skipping unsafe monitor URL "${url}": ${e instanceof Error ? e.message : String(e)}`);
+            continue;
+          }
         }
 
         const result: { name: string; url: string; biotics?: string[]; warnings?: string[] } = { name, url: validatedUrl };
@@ -160,6 +165,11 @@ const collectAppUrls = createStep({
         return desc;
       }),
     });
+
+    if (apps.length === 0) {
+      logger?.warn("⚠️ [collectAppUrls] No runnable apps after validation. Releasing run lock.");
+      await releaseRunLock(runId);
+    }
 
     return apps;
   },

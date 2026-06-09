@@ -1,5 +1,6 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
+import { safeFetchUrl } from "../../utils/urlSafety";
 
 export const checkUrlTool = createTool({
   id: "check-url-liveness",
@@ -31,21 +32,14 @@ export const checkUrlTool = createTool({
     const startTime = Date.now();
 
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch(url, {
+      const { response, responseTimeMs } = await safeFetchUrl(url, {
         method: "GET",
-        signal: controller.signal,
-        redirect: "follow",
         headers: {
           "User-Agent": "Backcheck/1.0",
         },
+        timeoutMs: 15000,
       });
 
-      clearTimeout(timeout);
-
-      const responseTimeMs = Date.now() - startTime;
       const isLive = response.status >= 200 && response.status < 400;
 
       logger?.info(
